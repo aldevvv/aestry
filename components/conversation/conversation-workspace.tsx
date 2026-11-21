@@ -457,47 +457,44 @@ export function ConversationWorkspace({
           toast.error(result.error)
           return
         }
-        const outcome = result.outcome as {
-          message?: unknown
-          phase?: unknown
-          skill?: unknown
-          brief?: unknown
-          clarification?: unknown
-          title?: unknown
-          structured?: unknown
-        }
+        // streamChat already validated the outcome against the schema.
+        const outcome = result.outcome
         const state = useConversations.getState()
         // The AI-proposed session title lands once, on the first reply, and
         // never overwrites a user-renamed conversation (the store guards).
-        if (typeof outcome.title === "string" && outcome.title.trim()) {
+        if (outcome.title && outcome.title.trim()) {
           state.setTitle(target.id, outcome.title, "ai")
         }
-        if (typeof outcome.message === "string" && outcome.message.trim()) {
+        if (outcome.message.trim()) {
           state.appendMessage(target.id, {
             id: crypto.randomUUID(),
             role: "assistant",
-            content: { type: "assistant-text", text: outcome.message },
+            content: {
+              type: "assistant-text",
+              text: outcome.message,
+              plan: { intent: outcome.intent, blocks: outcome.blocks },
+            },
             createdAt: new Date().toISOString(),
           })
         }
-        if (typeof outcome.skill === "string" && isSkillId(outcome.skill)) {
+        if (outcome.skill && isSkillId(outcome.skill)) {
           // The consultant assigns (or changes) the asset skill.
           state.setSkill(target.id, outcome.skill)
         }
-        if (
-          isRecord(outcome.brief) &&
-          typeof outcome.brief.concept === "string"
-        ) {
-          const brief = outcome.brief as unknown as NonNullable<
-            typeof target.brief
-          >
+        if (outcome.brief && typeof outcome.brief.concept === "string") {
+          const brief = outcome.brief
+          // The brief is always retained as structured state for generation;
+          // whether a visible brief card is shown is decided by the model's
+          // interaction intent, not by the mere presence of brief metadata.
           state.setBrief(target.id, brief)
-          state.appendMessage(target.id, {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: { type: "brief", brief },
-            createdAt: new Date().toISOString(),
-          })
+          if (outcome.intent === "prepare" || outcome.intent === "generate") {
+            state.appendMessage(target.id, {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: { type: "brief", brief },
+              createdAt: new Date().toISOString(),
+            })
+          }
         }
         if (
           isRecord(outcome.clarification) &&

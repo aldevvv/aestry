@@ -1,4 +1,9 @@
-import { consultationOutcomeSchema, type ConsultationOutcome } from "./schema"
+import {
+  consultationOutcomeSchema,
+  interactionBlockSchema,
+  type InteractionBlock,
+  type ConsultationOutcome,
+} from "./schema"
 import type { Message } from "./types"
 import { buildConsultationSystemPrompt } from "./prompts/compose"
 
@@ -48,6 +53,23 @@ function extractJsonCandidate(text: string): string | null {
  * non-JSON replies degrade to a plain-text clarifying outcome — a fake
  * design brief is never fabricated.
  */
+/**
+ * Validates the model-proposed interaction blocks individually: unknown
+ * types or malformed entries are dropped one by one so a single bad block
+ * never costs the user the whole reply.
+ */
+function sanitizeInteractionBlocks(raw: unknown): InteractionBlock[] {
+  if (!Array.isArray(raw)) return []
+  const blocks: InteractionBlock[] = []
+  for (const entry of raw.slice(0, 6)) {
+    const parsed = interactionBlockSchema.safeParse(entry)
+    if (parsed.success) {
+      blocks.push(parsed.data)
+    }
+  }
+  return blocks
+}
+
 export function parseConsultationReply(text: string): ConsultationOutcome {
   const candidate = extractJsonCandidate(text)
   if (candidate) {
@@ -84,6 +106,8 @@ export function parseConsultationReply(text: string): ConsultationOutcome {
               }
             : undefined,
           title: sanitizeSessionTitle(data.title),
+          intent: data.intent ?? "answer",
+          blocks: sanitizeInteractionBlocks(data.blocks),
           structured: true,
         }
       }
@@ -91,7 +115,7 @@ export function parseConsultationReply(text: string): ConsultationOutcome {
       // Fall through to plain-text recovery.
     }
   }
-  return { message: text, phase: "clarifying", structured: false }
+  return { message: text, phase: "clarifying", intent: "answer", blocks: [], structured: false }
 }
 
 /**

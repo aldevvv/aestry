@@ -3,9 +3,87 @@ import { z } from "zod"
 import { designBriefSchema } from "@/lib/skills/registry"
 
 /**
+ * Interaction blocks: model-selected presentation units from a trusted
+ * registry. Every variant is typed, bounded, and serializable; the server
+ * drops unknown or malformed entries individually so one bad block never
+ * costs the user the whole reply.
+ */
+export const interactionBlockSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("concept-comparison"),
+    options: z
+      .array(
+        z.object({
+          title: z.string().min(1).max(80),
+          premise: z.string().min(1).max(400),
+          composition: z.string().max(400).nullish(),
+          tradeoffs: z.string().max(400).nullish(),
+        })
+      )
+      .min(2)
+      .max(4),
+  }),
+  z.object({
+    type: z.literal("critique"),
+    basedOn: z.enum(["reference-image", "generated-image", "description"]),
+    strengths: z.array(z.string().min(1).max(300)).max(4),
+    problems: z.array(z.string().min(1).max(300)).max(4),
+    refinements: z.array(z.string().min(1).max(300)).max(4),
+  }),
+  z.object({
+    type: z.literal("palette"),
+    colors: z
+      .array(
+        z.object({
+          hex: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+          role: z.string().min(1).max(80),
+        })
+      )
+      .min(2)
+      .max(6),
+    note: z.string().max(300).nullish(),
+  }),
+  z.object({
+    type: z.literal("typography"),
+    directions: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(80),
+          attitude: z.string().min(1).max(200),
+          note: z.string().max(200).nullish(),
+        })
+      )
+      .min(2)
+      .max(3),
+  }),
+  z.object({
+    type: z.literal("generation-proposal"),
+    summary: z.string().min(1).max(400),
+    suggestedCount: z.union([z.literal(1), z.literal(2), z.literal(4)]).nullish(),
+  }),
+])
+
+export type InteractionBlock = z.infer<typeof interactionBlockSchema>
+
+export const CONSULTATION_INTENTS = [
+  "answer",
+  "clarify",
+  "explore",
+  "compare",
+  "critique",
+  "prepare",
+  "generate",
+  "refine",
+] as const
+
+export type ConsultationIntent = (typeof CONSULTATION_INTENTS)[number]
+
+/**
  * Validated contract between the multimodal provider and the orchestrator.
  * The server parses the model's JSON output against this schema before the
  * client ever sees it; malformed output never becomes a fake design brief.
+ * `intent` and `blocks` drive adaptive rendering — plain `message` text
+ * remains a complete, first-class outcome on its own.
  */
 export const consultationOutcomeSchema = z.object({
   message: z.string().min(1),
@@ -21,6 +99,10 @@ export const consultationOutcomeSchema = z.object({
     .nullish(),
   /** AI-proposed session title for the first consultation turn. */
   title: z.string().max(200).nullish(),
+  /** What kind of interaction this turn is. Defaults to a plain answer. */
+  intent: z.enum(CONSULTATION_INTENTS).nullish(),
+  /** Optional presentation blocks; unknown or malformed ones are dropped. */
+  blocks: z.array(z.unknown()).max(6).nullish(),
 })
 
 export type ConsultationOutcome = {
@@ -31,6 +113,8 @@ export type ConsultationOutcome = {
   clarification?: { question: string; suggestions?: string[] }
   /** Sanitized AI-proposed session title, when the model supplied one. */
   title?: string
+  intent: ConsultationIntent
+  blocks: InteractionBlock[]
   /**
    * False when the model's reply could not be parsed as the structured
    * contract and only its plain text was recovered. No brief is invented

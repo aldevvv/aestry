@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button"
 import { ActivityOrb, ThinkingOrbIndicator } from "@/components/thinking-indicator"
 import { useImageUrl } from "@/components/conversation/image-url"
 import { Markdown } from "@/components/conversation/markdown"
+import { InteractionBlocks } from "@/components/conversation/interaction-blocks"
 import { getSkill, type SkillId } from "@/lib/skills/registry"
 import type {
   GenerationRecord,
@@ -309,8 +310,18 @@ export function MessageListItem({
 
   if (content.type === "assistant-text") {
     return (
-      <div className="flex flex-col gap-1">
+      <div className="flex flex-col gap-2.5">
         <Markdown content={content.text} />
+        {content.plan?.blocks?.length ? (
+          <InteractionBlocks
+            blocks={content.plan.blocks}
+            onSelect={
+              onClarificationSuggestion
+                ? (choice) => onClarificationSuggestion(choice)
+                : undefined
+            }
+          />
+        ) : null}
       </div>
     )
   }

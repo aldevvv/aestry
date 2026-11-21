@@ -1,4 +1,5 @@
 import type { DesignBrief, SkillId } from "@/lib/skills/registry"
+import type { ConsultationIntent, InteractionBlock } from "./schema"
 
 /**
  * Typed conversation content. Messages are not plain strings: the renderer
@@ -48,7 +49,12 @@ export type GenerationRecord = {
 
 export type MessageContent =
   | { type: "text"; text: string; references?: StoredImageRef[] }
-  | { type: "assistant-text"; text: string }
+  | {
+      type: "assistant-text"
+      text: string
+      /** The validated interaction plan that produced this reply. */
+      plan?: { intent: ConsultationIntent; blocks: InteractionBlock[] }
+    }
   | { type: "clarification"; question: string; suggestions?: string[] }
   | { type: "brief"; brief: DesignBrief }
   | { type: "generation"; generationId: string }
