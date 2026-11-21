@@ -46,10 +46,12 @@ import {
   maskApiKey,
   openAiCompatibleFormSchema,
   useProviders,
+  resolveSelection,
   type ModelCapability,
   type ProviderConfig,
   type ProviderKind,
   type ProviderModel,
+  type ProviderRole,
 } from "@/lib/provider-store"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -768,6 +770,115 @@ function AddProviderForm() {
   )
 }
 
+function ActiveModelRole({
+  role,
+  capability,
+  label,
+  hint,
+}: {
+  role: ProviderRole
+  capability: ModelCapability
+  label: string
+  hint: string
+}) {
+  const providers = useProviders((state) => state.providers)
+  const selection = useProviders((state) => state.selections[role])
+  const setSelection = useProviders((state) => state.setSelection)
+
+  const options = providers.flatMap((provider) =>
+    (provider.models ?? [])
+      .filter((model: ProviderModel) => model.capability === capability)
+      .map((model) => ({
+        value: `${provider.id}::${model.id}`,
+        label: `${provider.label} · ${model.id}`,
+      }))
+  )
+
+  const resolved = resolveSelection(providers, selection)
+  const currentValue = resolved
+    ? `${resolved.provider.id}::${resolved.model}`
+    : null
+  // The selection may point at a provider or model that no longer exists.
+  const stale = Boolean(selection) && !resolved
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={`active-${role}`}>{label}</Label>
+      {options.length > 0 ? (
+        <Select
+          value={currentValue}
+          onValueChange={(value) => {
+            if (typeof value !== "string") return
+            const separator = value.indexOf("::")
+            const providerId = value.slice(0, separator)
+            const model = value.slice(separator + 2)
+            setSelection(role, { providerId, model })
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full" id={`active-${role}`}>
+            <SelectValue placeholder={`Choose a ${capability} model`} />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Load models for a provider below to choose one here.
+        </p>
+      )}
+      {stale ? (
+        <p className="text-xs text-warning">
+          The previously selected model is no longer available — choose again.
+        </p>
+      ) : null}
+      {resolved ? (
+        <p className="text-xs text-muted-foreground">{hint}</p>
+      ) : null}
+    </div>
+  )
+}
+
+function ActiveModelsSection() {
+  return (
+    <section
+      className="flex flex-col gap-4"
+      aria-labelledby="active-models-heading"
+    >
+      <div className="flex flex-col gap-1">
+        <h2
+          id="active-models-heading"
+          className="text-sm font-medium text-foreground"
+        >
+          Active models
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Consultation and generation can use different providers. Nothing is
+          selected implicitly — generation only runs on the model you choose.
+        </p>
+      </div>
+      <div className="grid gap-4 rounded-xl border border-border bg-card p-4 sm:grid-cols-2">
+        <ActiveModelRole
+          role="consultation"
+          capability="multimodal"
+          label="Consultation model"
+          hint="Powers the design consultant in conversations."
+        />
+        <ActiveModelRole
+          role="generation"
+          capability="image"
+          label="Image generation model"
+          hint="Produces assets when you approve a brief."
+        />
+      </div>
+    </section>
+  )
+}
+
 function ProvidersManager() {
   const providers = useProviders((state) => state.providers)
   const removeProvider = useProviders((state) => state.removeProvider)
@@ -779,6 +890,7 @@ function ProvidersManager() {
 
   return (
     <div className="flex flex-col gap-8">
+      <ActiveModelsSection />
       <section
         className="flex flex-col gap-4"
         aria-labelledby="providers-list-heading"

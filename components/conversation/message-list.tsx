@@ -1,0 +1,409 @@
+"use client"
+
+import * as React from "react"
+import Image from "next/image"
+import {
+  DownloadIcon,
+  ImagePlusIcon,
+  RefreshCwIcon,
+  TriangleAlertIcon,
+} from "lucide-react"
+
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
+import { useImageUrl } from "@/components/conversation/image-url"
+import { getSkill, type SkillId } from "@/lib/skills/registry"
+import type {
+  GenerationRecord,
+  Message,
+} from "@/lib/conversation/types"
+
+const EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+}
+
+function aspectClassName(aspect: string): string {
+  return aspect === "landscape" ? "aspect-[1200/630]" : "aspect-square"
+}
+
+function ReferenceThumb({ imageId }: { imageId: string }) {
+  const url = useImageUrl(imageId)
+  if (!url) {
+    return (
+      <div className="size-16 shrink-0 animate-pulse rounded-lg border border-border bg-muted" />
+    )
+  }
+  return (
+    <div className="size-16 shrink-0 overflow-hidden rounded-lg border border-border">
+      <Image
+        src={url}
+        alt="Reference image"
+        width={64}
+        height={64}
+        unoptimized
+        className="size-16 object-cover"
+      />
+    </div>
+  )
+}
+
+function GenerationGallery({
+  record,
+  onRetryItem,
+  onUseAsReference,
+}: {
+  record: GenerationRecord
+  onRetryItem?: (itemId: string) => void
+  onUseAsReference?: (imageId: string, mimeType: string) => void
+}) {
+  const skill = getSkill(record.skillId)
+  const failed = record.items.filter((item) => item.status === "failed")
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div
+        className={
+          record.items.filter((item) => item.status !== "failed").length > 1
+            ? "grid grid-cols-2 gap-2"
+            : "grid grid-cols-1 gap-2"
+        }
+      >
+        {record.items.map((item) => (
+          <GeneratedImageTile
+            key={item.id}
+            item={item}
+            aspect={skill.previewAspect}
+            onRetry={
+              onRetryItem && item.status === "failed"
+                ? () => onRetryItem(item.id)
+                : undefined
+            }
+            onUseAsReference={
+              onUseAsReference && item.status === "done" && item.imageId
+                ? () => onUseAsReference(item.imageId as string, item.mimeType as string)
+                : undefined
+            }
+          />
+        ))}
+      </div>
+      {record.warning ? (
+        <p
+          className="flex items-start gap-2 text-xs text-warning"
+          role="note"
+        >
+          <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span>{record.warning}</span>
+        </p>
+      ) : null}
+      {failed.length > 0 && record.items.length > failed.length ? (
+        <p className="text-xs text-muted-foreground">
+          {record.items.length - failed.length} of {record.items.length}{" "}
+          images generated. Failures can be retried individually.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function GeneratedImageTile({
+  item,
+  aspect,
+  onRetry,
+  onUseAsReference,
+}: {
+  item: GenerationRecord["items"][number]
+  aspect: string
+  onRetry?: () => void
+  onUseAsReference?: () => void
+}) {
+  const url = useImageUrl(item.imageId)
+
+  if (item.status === "pending") {
+    return (
+      <div
+        className={`flex ${aspectClassName(aspect)} items-center justify-center rounded-xl border border-border bg-card text-muted-foreground`}
+      >
+        <Spinner className="size-5" />
+      </div>
+    )
+  }
+  if (item.status === "failed" || !url) {
+    return (
+      <div className="flex flex-col items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive">
+        <div className="flex items-start gap-2">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+          <p className="text-sm/relaxed">{item.error ?? "Generation failed."}</p>
+        </div>
+        {onRetry ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-destructive/40"
+            onClick={onRetry}
+          >
+            <RefreshCwIcon />
+            Retry
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
+  return (
+    <div
+      className={`relative overflow-hidden rounded-xl border border-border bg-card ${aspectClassName(aspect)}`}
+    >
+      <Image
+        src={url}
+        alt="Generated asset"
+        width={1024}
+        height={aspect === "landscape" ? 540 : 1024}
+        unoptimized
+        className={`w-full object-contain ${aspectClassName(aspect)}`}
+      />
+      <div className="absolute right-2 bottom-2 flex gap-1.5">
+        {onUseAsReference ? (
+          <button
+            type="button"
+            onClick={onUseAsReference}
+            aria-label="Use as refinement reference"
+            className="flex size-8 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
+          >
+            <ImagePlusIcon className="size-4" />
+          </button>
+        ) : null}
+        <a
+          href={url}
+          download={`aestry-${item.id}.${EXTENSIONS[item.mimeType ?? ""] ?? "png"}`}
+          aria-label="Download image"
+          className="flex size-8 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
+        >
+          <DownloadIcon className="size-4" />
+        </a>
+      </div>
+    </div>
+  )
+}
+
+export function MessageListItem({
+  message,
+  generations,
+  skillId,
+  generatableBriefId,
+  onGenerate,
+  onRetryItem,
+  onClarificationSuggestion,
+  onUseAsReference,
+}: {
+  message: Message
+  generations: Record<string, GenerationRecord>
+  skillId: SkillId
+  generatableBriefId?: string
+  onGenerate?: (count: 1 | 2 | 4) => void
+  onRetryItem?: (generationId: string, itemId: string) => void
+  onClarificationSuggestion?: (suggestion: string) => void
+  onUseAsReference?: (imageId: string, mimeType: string) => void
+}) {
+  const content = message.content
+  const canGenerate =
+    content.type === "brief" && message.id === generatableBriefId
+
+  if (message.role === "user") {
+    return (
+      <div className="flex flex-col items-end gap-2">
+        {content.type === "text" ? (
+          <>
+            {content.references && content.references.length > 0 ? (
+              <div className="flex flex-wrap justify-end gap-2">
+                {content.references.map((reference) => (
+                  <ReferenceThumb key={reference.imageId} imageId={reference.imageId} />
+                ))}
+              </div>
+            ) : null}
+            <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2.5 text-sm text-primary-foreground sm:max-w-[70%]">
+              <p className="whitespace-pre-wrap break-words">{content.text}</p>
+            </div>
+          </>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (content.type === "assistant-text") {
+    return (
+      <div className="flex flex-col gap-1">
+        <p className="text-sm/relaxed text-foreground whitespace-pre-wrap break-words">
+          {content.text}
+        </p>
+      </div>
+    )
+  }
+
+  if (content.type === "clarification") {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-sm/relaxed text-foreground">{content.question}</p>
+        {content.suggestions && content.suggestions.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {content.suggestions.map((suggestion) => (
+              <Button
+                key={suggestion}
+                variant="outline"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={() => onClarificationSuggestion?.(suggestion)}
+              >
+                {suggestion}
+              </Button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (content.type === "brief") {
+    const brief = content.brief
+    return (
+      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium text-foreground">
+            Design brief · {getSkill(skillId).name}
+          </p>
+          <Badge variant="secondary">Proposal</Badge>
+        </div>
+        <dl className="flex flex-col gap-1.5 text-sm/relaxed">
+          {[
+            ["Concept", brief.concept],
+            ["Style", brief.style],
+            ["Palette", brief.palette],
+            ["Composition", brief.composition],
+            ...(brief.symbolism ? [["Symbolism", brief.symbolism]] : []),
+            ...(brief.typography ? [["Typography", brief.typography]] : []),
+            ...(brief.headline ? [["Headline", brief.headline]] : []),
+            ...(brief.subline ? [["Supporting line", brief.subline]] : []),
+          ].map(([term, value]) => (
+            <div key={term} className="flex flex-col sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-xs font-medium text-muted-foreground sm:w-24 sm:pt-0.5">
+                {term}
+              </dt>
+              <dd className="min-w-0 text-foreground">{value}</dd>
+            </div>
+          ))}
+          {brief.constraints && brief.constraints.length > 0 ? (
+            <div className="flex flex-col sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-xs font-medium text-muted-foreground sm:w-24 sm:pt-0.5">
+                Constraints
+              </dt>
+              <dd className="min-w-0 text-foreground">
+                {brief.constraints.join("; ")}
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+        {canGenerate && onGenerate ? (
+          <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+            <Button onClick={() => onGenerate(1)}>Generate image</Button>
+            <Button variant="outline" onClick={() => onGenerate(2)}>
+              2 variations
+            </Button>
+            <Button variant="outline" onClick={() => onGenerate(4)}>
+              4 variations
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (content.type === "generation") {
+    const record = generations[content.generationId]
+    if (!record) return null
+    return (
+      <GenerationGallery
+        record={record}
+        onRetryItem={
+          onRetryItem ? (itemId) => onRetryItem(content.generationId, itemId) : undefined
+        }
+        onUseAsReference={onUseAsReference}
+      />
+    )
+  }
+
+  if (content.type === "error") {
+    return (
+      <div
+        role="alert"
+        className="flex items-start gap-2 rounded-xl bg-destructive/10 p-3 text-sm text-destructive"
+      >
+        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+        <p className="text-sm/relaxed">{content.error}</p>
+      </div>
+    )
+  }
+
+  if (content.type === "context") {
+    return (
+      <div className="rounded-xl border border-dashed border-border p-3">
+        <p className="text-xs font-medium text-muted-foreground">
+          {content.title}
+        </p>
+        <p className="mt-1 text-sm/relaxed text-muted-foreground">
+          {content.summary}
+        </p>
+      </div>
+    )
+  }
+
+  return null
+}
+
+export function MessageList({
+  messages,
+  generations,
+  skillId,
+  generatableBriefId,
+  onGenerate,
+  onRetryItem,
+  onClarificationSuggestion,
+  onUseAsReference,
+}: {
+  messages: Message[]
+  generations: Record<string, GenerationRecord>
+  skillId: SkillId
+  generatableBriefId?: string
+  onGenerate?: (count: 1 | 2 | 4) => void
+  onRetryItem?: (generationId: string, itemId: string) => void
+  onClarificationSuggestion?: (suggestion: string) => void
+  onUseAsReference?: (imageId: string, mimeType: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      {messages.map((message) => (
+        <div
+          key={message.id}
+          className={
+            message.role === "user"
+              ? "flex justify-end"
+              : "flex justify-start"
+          }
+        >
+          <div className="max-w-full">
+            <MessageListItem
+              message={message}
+              generations={generations}
+              skillId={skillId}
+              generatableBriefId={generatableBriefId}
+              onGenerate={onGenerate}
+              onRetryItem={onRetryItem}
+              onClarificationSuggestion={onClarificationSuggestion}
+              onUseAsReference={onUseAsReference}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}

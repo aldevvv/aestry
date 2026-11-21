@@ -2,16 +2,21 @@ import { create } from "zustand"
 import { createJSONStorage, persist } from "zustand/middleware"
 import { z } from "zod"
 
-export type ProviderKind = "google" | "openai-compatible"
+import {
+  type ProviderKind,
+  type ProviderModel,
+} from "@/lib/providers/models"
 
-export type ModelCapability = "multimodal" | "image"
-
-export type ProviderModel = {
-  id: string
-  /** Friendly name as reported by the provider, when available. */
-  label?: string
-  capability: ModelCapability
-}
+// Domain types live in lib/providers/models so server adapters can share
+// them without importing client state. Re-exported here for UI consumers.
+export {
+  GOOGLE_PROVIDER_LABEL,
+  PROVIDER_KIND_LABELS,
+  inferCapabilities,
+  type ModelCapability,
+  type ProviderKind,
+  type ProviderModel,
+} from "@/lib/providers/models"
 
 export type ProviderConfig = {
   id: string
@@ -29,46 +34,11 @@ export type ProviderConfig = {
   createdAt: string
 }
 
-export const GOOGLE_PROVIDER_LABEL = "Google Gemini"
+export type ProviderRole = "consultation" | "generation"
 
-// Realtime voice, embeddings, and video models are not usable for either
-// selector, so they are filtered out of discovery entirely.
-const EXCLUDED_MODEL_PATTERN = /embed|whisper|moderation|tts|veo|live|aqa/i
-const OPENAI_IMAGE_PATTERN =
-  /image|imagen|dall-e|flux|stable-diffusion|sd[0-9]/i
-
-/**
- * Buckets a discovered model into the two roles Aestry needs. Returns null
- * for models that fit neither role. Classification is a heuristic: for
- * Google it uses the model id plus its reported generation methods, for
- * OpenAI-compatible endpoints only the id.
- */
-export function classifyProviderModel(
-  kind: ProviderKind,
-  id: string,
-  methods?: readonly string[]
-): ModelCapability | null {
-  if (EXCLUDED_MODEL_PATTERN.test(id)) return null
-  if (kind === "google") {
-    if (/^imagen/i.test(id) || /image/i.test(id)) return "image"
-    if (methods && !methods.includes("generateContent")) {
-      if (
-        methods.includes("predictLongRunning") ||
-        methods.includes("predict")
-      ) {
-        return "image"
-      }
-      return null
-    }
-    return "multimodal"
-  }
-  if (OPENAI_IMAGE_PATTERN.test(id)) return "image"
-  return "multimodal"
-}
-
-export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
-  google: "Built-in · Google Gemini",
-  "openai-compatible": "OpenAI-compatible",
+export type RoleSelection = {
+  providerId: string
+  model: string
 }
 
 export const googleFormSchema = z.object({
@@ -106,9 +76,15 @@ export function collectFieldErrors(
   return fieldErrors
 }
 
+export function maskApiKey(apiKey: string): string {
+  const tail = apiKey.slice(-4)
+  return `•••• ${tail}`
+}
+
 /**
- * Non-local HTTP endpoints transport the API key unencrypted; used to show
- * a caution without blocking self-hosted setups on trusted networks.
+ * Non-local HTTP endpoints transport the API key unencrypted; used for a
+ * client-side caution without blocking self-hosted setups on trusted
+ * networks. The server-side outbound policy makes the final call.
  */
 export function isInsecureEndpoint(baseUrl: string): boolean {
   try {
@@ -126,42 +102,62 @@ export function isInsecureEndpoint(baseUrl: string): boolean {
   }
 }
 
-export function maskApiKey(apiKey: string): string {
-  const tail = apiKey.slice(-4)
-  return `•••• ${tail}`
-}
-
 type ProvidersState = {
   providers: ProviderConfig[]
+  /**
+   * Explicit role selections. Deliberately null by default: no provider is
+   * activated implicitly, because doing so could silently spend credits on
+   * an endpoint the user did not choose for that role.
+   */
+  selections: {
+    consultation: RoleSelection | null
+    generation: RoleSelection | null
+  }
   addProvider: (provider: ProviderConfig) => void
   removeProvider: (id: string) => void
+  setSelection: (role: ProviderRole, selection: RoleSelection | null) => void
 }
 
 /**
  * Provider credentials live in this browser only (localStorage via zustand
- * persist). They are never synced or sent anywhere except to the endpoint
- * the user configured, and a removal deletes the key outright.
+ * persist). They travel through the self-hosted Aestry server to the
+ * configured provider on each proxied operation, and a removal deletes the
+ * key outright.
  */
 export const useProviders = create<ProvidersState>()(
   persist(
     (set) => ({
       providers: [],
+      selections: { consultation: null, generation: null },
       addProvider: (provider) =>
         set((state) => ({ providers: [...state.providers, provider] })),
       removeProvider: (id) =>
+        set((state) => {
+          const selections = { ...state.selections }
+          if (selections.consultation?.providerId === id) {
+            selections.consultation = null
+          }
+          if (selections.generation?.providerId === id) {
+            selections.generation = null
+          }
+          return {
+            providers: state.providers.filter(
+              (provider) => provider.id !== id
+            ),
+            selections,
+          }
+        }),
+      setSelection: (role, selection) =>
         set((state) => ({
-          providers: state.providers.filter(
-            (provider) => provider.id !== id
-          ),
+          selections: { ...state.selections, [role]: selection },
         })),
     }),
     {
       name: "aestry.providers.v1",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       migrate: (persisted, version) => {
-        if (version >= 2) return persisted as ProvidersState
-        // v1 stored a single `model` string and `models` as string ids.
+        if (version >= 3) return persisted as ProvidersState
         const legacy = persisted as {
           providers?: Array<Record<string, unknown>>
         }
@@ -176,8 +172,21 @@ export const useProviders = create<ProvidersState>()(
               models: undefined,
             } as ProviderConfig
           }),
+          // v2 and earlier had no explicit role selections.
+          selections: { consultation: null, generation: null },
         }
       },
     }
   )
 )
+
+/** Resolves a role selection against the current provider list. */
+export function resolveSelection(
+  providers: ProviderConfig[],
+  selection: RoleSelection | null
+): { provider: ProviderConfig; model: string } | null {
+  if (!selection) return null
+  const provider = providers.find((p) => p.id === selection.providerId)
+  if (!provider) return null
+  return { provider, model: selection.model }
+}

@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
-import { SearchIcon } from "lucide-react"
+import { SearchIcon, SquarePenIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import {
@@ -30,6 +30,7 @@ import {
   SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar"
+import { useConversations } from "@/lib/conversation/store"
 import {
   APP_NAV_ITEMS,
   UPCOMING_NAV_ITEMS,
@@ -50,6 +51,29 @@ function SidebarBrand() {
         {state === "collapsed" ? "a." : "aestry."}
       </Link>
     </div>
+  )
+}
+
+function SidebarNewChat() {
+  const router = useRouter()
+
+  return (
+    <SidebarGroup>
+      <SidebarMenu>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            tooltip="New chat"
+            onClick={() => {
+              useConversations.getState().setActive(null)
+              router.push("/")
+            }}
+          >
+            <SquarePenIcon />
+            <span>New chat</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      </SidebarMenu>
+    </SidebarGroup>
   )
 }
 
@@ -195,6 +219,7 @@ function AppSidebar() {
         <SidebarBrand />
       </SidebarHeader>
       <SidebarContent>
+        <SidebarNewChat />
         <SidebarSearch />
         <SidebarNavGroup
           items={APP_NAV_ITEMS.filter((item) => item.group === "workspace")}

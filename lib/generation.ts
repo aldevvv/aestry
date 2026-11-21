@@ -29,13 +29,17 @@ export const generationRequestSchema = z.object({
 
 export type GenerationRequestBody = z.infer<typeof generationRequestSchema>
 
-export type GeneratedImage = { mimeType: string; data: string }
-
+/**
+ * Mirrors the provider adapter contract: each requested image is reported
+ * independently so partial failures stay visible.
+ */
 export type GenerationResult =
-  | { ok: true; image: GeneratedImage }
+  | { ok: true; mimeType: string; data: string }
   | { ok: false; error: string }
 
 export type GenerationApiResponse = {
   results: GenerationResult[]
+  /** The server-compiled generation prompt (metadata, no secrets). */
+  prompt?: string
   warning?: string
 }
