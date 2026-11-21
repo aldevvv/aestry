@@ -18,9 +18,38 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { GenerationResults, type GenerationRecord, type GenerationImage } from "@/components/generation-results"
 import { useMounted } from "@/hooks/use-mounted"
-import { useProviders } from "@/lib/provider-store"
+import { useProviders, type ProviderConfig } from "@/lib/provider-store"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function fileToBase64(
+  file: File
+): Promise<{ mimeType: string; data: string }> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result)
+      const separator = result.indexOf(",")
+      resolve({
+        mimeType: file.type || "image/png",
+        data: result.slice(separator + 1),
+      })
+    }
+    reader.onerror = () => reject(new Error("Could not read the image"))
+    reader.readAsDataURL(file)
+  })
+}
+
+function createImageUrl(base64: string, mimeType: string): string {
+  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0))
+  return URL.createObjectURL(new Blob([bytes], { type: mimeType }))
+}
 
 const MAX_ATTACHMENTS = 4
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -65,13 +94,6 @@ function isQuantity(value: string): value is Quantity {
   }
 }
 
-export type GenerationRequest = {
-  prompt: string
-  assetType: AssetType
-  quantity: Quantity
-  referenceImages: File[]
-}
-
 type Attachment = {
   id: string
   file: File
@@ -84,15 +106,8 @@ const EXAMPLE_PROMPTS = [
   "Create an OG image for my open-source project.",
 ]
 
-function ModelPicker() {
+function ModelPicker({ active }: { active: ProviderConfig | undefined }) {
   const [open, setOpen] = React.useState(false)
-  const providers = useProviders((state) => state.providers)
-  const mounted = useMounted()
-  // Most recently added provider is the one generation will use first.
-  const active = mounted
-    ? providers[providers.length - 1]
-    : undefined
-
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -118,12 +133,16 @@ function ModelPicker() {
           </PopoverDescription>
         </PopoverHeader>
         {active ? (
-          <p className="text-xs text-muted-foreground">
-            {active.kind === "google"
-              ? "Built-in · Google Gemini"
-              : active.baseUrl}
-            {active.model ? ` · ${active.model}` : ""}
-          </p>
+          <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+            {active.imageModel ? (
+              <p className="truncate">Image · {active.imageModel}</p>
+            ) : null}
+            {active.multimodalModel ? (
+              <p className="truncate">
+                Multimodal · {active.multimodalModel}
+              </p>
+            ) : null}
+          </div>
         ) : null}
         <Button
           variant="outline"
@@ -139,27 +158,46 @@ function ModelPicker() {
   )
 }
 
-function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) => void }) {
+function PromptComposer() {
+  const providers = useProviders((state) => state.providers)
+  const mounted = useMounted()
+  // Most recently added provider is the one generation uses.
+  const active = mounted ? providers[providers.length - 1] : undefined
   const [prompt, setPrompt] = React.useState("")
   const [assetType, setAssetType] = React.useState<AssetType>("app-icon")
   const [quantity, setQuantity] = React.useState<Quantity>("1")
   const [attachments, setAttachments] = React.useState<Attachment[]>([])
+  const [running, setRunning] = React.useState(false)
+  const [generations, setGenerations] = React.useState<GenerationRecord[]>([])
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const resultsRef = React.useRef<HTMLDivElement | null>(null)
 
   // Keep a ref in sync so unmount cleanup can revoke every object URL that
   // was ever created, even after the state has moved on.
   const attachmentsRef = React.useRef<Attachment[]>([])
+  const generationsRef = React.useRef<GenerationRecord[]>([])
   React.useEffect(() => {
     attachmentsRef.current = attachments
   }, [attachments])
+  React.useEffect(() => {
+    generationsRef.current = generations
+  }, [generations])
 
   React.useEffect(() => {
     return () => {
       for (const attachment of attachmentsRef.current) {
         URL.revokeObjectURL(attachment.url)
       }
+      for (const record of generationsRef.current) {
+        for (const image of record.images) {
+          URL.revokeObjectURL(image.url)
+        }
+      }
     }
   }, [])
+
+  const canGenerate =
+    Boolean(active?.imageModel) && prompt.trim().length > 0 && !running
 
   const removeAttachment = React.useCallback((id: string) => {
     setAttachments((previous) => {
@@ -209,6 +247,135 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
     setPrompt(value)
     textareaRef.current?.focus()
   }, [])
+
+  const updateGeneration = React.useCallback(
+    (id: string, patch: Partial<GenerationRecord>) => {
+      setGenerations((previous) =>
+        previous.map((record) =>
+          record.id === id ? { ...record, ...patch } : record
+        )
+      )
+    },
+    []
+  )
+
+  const submitGeneration = React.useCallback(async () => {
+    if (!active?.imageModel || running || !prompt.trim()) return
+    let referenceImages: Array<{ mimeType: string; data: string }> = []
+    if (attachments.length > 0) {
+      try {
+        referenceImages = await Promise.all(
+          attachments.map((attachment) => fileToBase64(attachment.file))
+        )
+      } catch {
+        toast.error("Could not read a reference image.")
+        return
+      }
+    }
+
+    const record: GenerationRecord = {
+      id: crypto.randomUUID(),
+      prompt: prompt.trim(),
+      providerLabel: active.label,
+      imageModel: active.imageModel,
+      status: "running",
+      count: Number(quantity),
+      images: [],
+    }
+    setGenerations((previous) => [record, ...previous])
+    setRunning(true)
+    const prefersReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches
+    requestAnimationFrame(() => {
+      resultsRef.current?.scrollIntoView({
+        behavior: prefersReducedMotion ? "auto" : "smooth",
+        block: "nearest",
+      })
+    })
+
+    try {
+      const response = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: active.kind,
+          apiKey: active.apiKey,
+          model: active.imageModel,
+          baseUrl: active.baseUrl,
+          prompt: record.prompt,
+          count: Number(quantity),
+          referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
+        }),
+        signal: AbortSignal.timeout(180_000),
+      })
+      const data: unknown = await response.json().catch(() => null)
+      if (!response.ok) {
+        const message =
+          isRecord(data) && typeof data.error === "string"
+            ? data.error
+            : `Generation failed (${response.status}).`
+        updateGeneration(record.id, { status: "error", error: message })
+        toast.error(message)
+        return
+      }
+      if (!isRecord(data) || !Array.isArray(data.results)) {
+        updateGeneration(record.id, {
+          status: "error",
+          error: "The generation response could not be read.",
+        })
+        return
+      }
+      const images: GenerationImage[] = []
+      let firstError: string | undefined
+      for (const item of data.results) {
+        if (
+          isRecord(item) &&
+          item.ok === true &&
+          isRecord(item.image) &&
+          typeof item.image.mimeType === "string" &&
+          typeof item.image.data === "string"
+        ) {
+          images.push({
+            url: createImageUrl(item.image.data, item.image.mimeType),
+            mimeType: item.image.mimeType,
+          })
+        } else if (
+          isRecord(item) &&
+          item.ok === false &&
+          typeof item.error === "string" &&
+          !firstError
+        ) {
+          firstError = item.error
+        }
+      }
+      const warning =
+        isRecord(data) && typeof data.warning === "string"
+          ? data.warning
+          : undefined
+      if (images.length === 0) {
+        const message = firstError ?? "No images were returned."
+        updateGeneration(record.id, { status: "error", error: message, warning })
+        toast.error(message)
+        return
+      }
+      updateGeneration(record.id, { status: "done", images, warning })
+      toast.success(
+        `Generated ${images.length.toString()} image${
+          images.length === 1 ? "" : "s"
+        }`
+      )
+    } catch (error) {
+      const message =
+        error instanceof DOMException && error.name === "TimeoutError"
+          ? "Generation timed out."
+          : "Could not reach the Aestry server."
+      updateGeneration(record.id, { status: "error", error: message })
+      toast.error(message)
+    } finally {
+      setRunning(false)
+    }
+  }, [active, attachments, prompt, quantity, running, updateGeneration])
 
   return (
     <div className="w-full">
@@ -308,16 +475,24 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
             >
               <PaperclipIcon />
             </Button>
-            <ModelPicker />
-            {/* Generation ships in a later phase: without an onSubmit handler
-                the composer stays disabled instead of pretending to work. */}
-            <Button disabled={!onSubmit} aria-disabled={!onSubmit}>
-              Generate
+            <ModelPicker active={active} />
+            <Button
+              onClick={() => void submitGeneration()}
+              disabled={!canGenerate}
+            >
+              {running ? (
+                <>
+                  <Spinner className="size-3.5" />
+                  Generating…
+                </>
+              ) : (
+                "Generate"
+              )}
             </Button>
           </div>
         </div>
       </div>
-      {onSubmit ? null : (
+      {mounted && !active ? (
         <p className="mt-3 text-center text-xs text-muted-foreground">
           Generation is available once an AI provider is configured.{" "}
           <Link
@@ -327,7 +502,7 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
             Set up providers
           </Link>
         </p>
-      )}
+      ) : null}
       <div className="mt-3 flex flex-wrap justify-center gap-1">
         {EXAMPLE_PROMPTS.map((example) => (
           <Button
@@ -340,6 +515,9 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
             {example}
           </Button>
         ))}
+      </div>
+      <div ref={resultsRef}>
+        <GenerationResults generations={generations} />
       </div>
     </div>
   )
