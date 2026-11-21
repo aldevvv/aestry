@@ -46,7 +46,7 @@ function SidebarBrand() {
       <Link
         href="/"
         aria-label="Aestry home"
-        className="rounded-md px-1.5 py-0.5 text-[15px] font-semibold tracking-tight text-sidebar-foreground outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        className="rounded-md px-1.5 py-0.5 text-sm font-semibold tracking-tight text-sidebar-foreground outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring"
       >
         {state === "collapsed" ? "a." : "aestry."}
       </Link>

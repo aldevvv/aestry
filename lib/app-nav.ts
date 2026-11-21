@@ -4,11 +4,12 @@ import {
   LayoutDashboardIcon,
   LayoutTemplateIcon,
   SettingsIcon,
+  TerminalIcon,
   type LucideIcon,
 } from "lucide-react"
 
 export type AppNavItem = {
-  href: "/" | "/history" | "/settings" | "/providers"
+  href: "/" | "/history" | "/settings" | "/providers" | "/terminal"
   label: string
   icon: LucideIcon
   group: "workspace" | "preferences"
@@ -37,6 +38,12 @@ export const APP_NAV_ITEMS: AppNavItem[] = [
     href: "/providers",
     label: "Providers",
     icon: KeyRoundIcon,
+    group: "preferences",
+  },
+  {
+    href: "/terminal",
+    label: "Terminal",
+    icon: TerminalIcon,
     group: "preferences",
   },
 ]
