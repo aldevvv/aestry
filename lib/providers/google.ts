@@ -657,7 +657,8 @@ export type GeneratedImageResult =
 export async function generateImagesGoogle(payload: {
   providerId: BuiltinProviderId
   model: string
-  prompt: string
+  /** One prompt per image slot, in request order. */
+  prompts: string[]
   count: number
   referenceImages?: Array<{ mimeType: string; data: string }>
   requestId?: string
@@ -672,12 +673,12 @@ export async function generateImagesGoogle(payload: {
     model: payload.model,
     message: `generation started · count ${payload.count.toString()}`,
   })
-  const contents = buildContents(
-    [{ role: "user", text: payload.prompt }],
-    payload.referenceImages
-  )
-  const calls = Array.from({ length: payload.count }, () =>
-    client.models.generateContent({
+  const calls = payload.prompts.slice(0, payload.count).map((prompt) => {
+    const contents = buildContents(
+      [{ role: "user", text: prompt }],
+      payload.referenceImages
+    )
+    return client.models.generateContent({
       model: payload.model,
       contents,
       config: {
@@ -685,7 +686,7 @@ export async function generateImagesGoogle(payload: {
         abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
     })
-  )
+  })
   const settled = await Promise.allSettled(calls)
   const results = await Promise.all(
     settled.map(async (item): Promise<GeneratedImageResult> => {

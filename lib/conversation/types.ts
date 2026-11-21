@@ -1,5 +1,11 @@
 import type { DesignBrief, SkillId } from "@/lib/skills/registry"
-import type { ConsultationIntent, InteractionBlock } from "./schema"
+import type {
+  ConsultationIntent,
+  InteractionBlock,
+  GenerationPlan,
+} from "./schema"
+
+export type { GenerationPlan } from "./schema"
 
 /**
  * Typed conversation content. Messages are not plain strings: the renderer
@@ -25,6 +31,8 @@ export type GenerationItem = {
   imageId?: string
   mimeType?: string
   error?: string
+  /** The prompt actually sent for this slot (metadata, no secrets). */
+  prompt?: string
   /**
    * Distinguishes "generated and durably stored" from "generated but only
    * viewable this session" — persistence failures must not read as the
@@ -43,6 +51,8 @@ export type GenerationRecord = {
   count: number
   status: "running" | "done"
   items: GenerationItem[]
+  /** Reference images used, so retries do not silently drop them. */
+  referenceImageIds?: StoredImageRef[]
   warning?: string
   createdAt: string
 }
@@ -98,6 +108,8 @@ export type Conversation = {
   }
   /** Prompt tokens measured by the provider after the last consultation. */
   contextTokens?: number
+  /** The consultant's proposed multi-image generation strategy, if any. */
+  generationPlan?: GenerationPlan
   /** Bounded public project context, when a GitHub reference was resolved. */
   projectContext?: {
     url: string

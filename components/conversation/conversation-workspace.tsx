@@ -524,6 +524,9 @@ export function ConversationWorkspace({
         if (typeof result.warning === "string") {
           toast.warning(result.warning)
         }
+        if (result.outcome.generationPlan) {
+          state.setGenerationPlan(target.id, result.outcome.generationPlan)
+        }
       } catch (error) {
         const message =
           error instanceof DOMException && error.name === "TimeoutError"
@@ -549,6 +552,7 @@ export function ConversationWorkspace({
   const runGeneration = React.useCallback(
     async (count: 1 | 2 | 4) => {
       if (!conversation?.brief || !generation) return
+      const plan = conversation.generationPlan
       const record: GenerationRecord = {
         id: crypto.randomUUID(),
         skillId: conversation.skillId,
@@ -561,6 +565,7 @@ export function ConversationWorkspace({
           id: crypto.randomUUID(),
           status: "pending" as const,
         })),
+        referenceImageIds: pendingReferences.length > 0 ? [...pendingReferences] : undefined,
         createdAt: new Date().toISOString(),
       }
       useConversations.getState().addGeneration(conversation.id, record)
@@ -602,6 +607,7 @@ export function ConversationWorkspace({
             skillId: conversation.skillId,
             brief: conversation.brief,
             count,
+            plan,
             referenceImages:
               referenceImages.length > 0 ? referenceImages : undefined,
           }),
@@ -644,6 +650,10 @@ export function ConversationWorkspace({
           isRecord(data) && typeof data.prompt === "string"
             ? data.prompt
             : record.prompt
+        const perItemPrompts =
+          isRecord(data) && Array.isArray(data.prompts)
+            ? data.prompts.filter((entry): entry is string => typeof entry === "string")
+            : undefined
 
         const results = data.results
         let done = 0
@@ -700,6 +710,7 @@ export function ConversationWorkspace({
                 imageId,
                 mimeType: item.mimeType,
                 persistence,
+                prompt: perItemPrompts?.[index],
               })
           } else {
             const message =
@@ -770,6 +781,27 @@ export function ConversationWorkspace({
           status: "pending",
           error: undefined,
         })
+      // A retry must not silently drop the reference images the original
+      // generation used: they are reloaded from the record.
+      const retryReferences: Array<{ mimeType: string; data: string }> = []
+      for (const reference of record.referenceImageIds ?? []) {
+        try {
+          const stored = await loadImageBlob(reference.imageId)
+          if (!stored) continue
+          const buffer = await stored.blob.arrayBuffer()
+          let binary = ""
+          const bytes = new Uint8Array(buffer)
+          for (let i = 0; i < bytes.length; i += 1) {
+            binary += String.fromCharCode(bytes[i])
+          }
+          retryReferences.push({
+            mimeType: reference.mimeType,
+            data: btoa(binary),
+          })
+        } catch {
+          continue
+        }
+      }
       try {
         const response = await fetch("/api/generate", {
           method: "POST",
@@ -780,6 +812,8 @@ export function ConversationWorkspace({
             skillId: record.skillId,
             brief: conversation.brief,
             count: 1,
+            referenceImages:
+              retryReferences.length > 0 ? retryReferences : undefined,
           }),
           signal: AbortSignal.timeout(240_000),
         })

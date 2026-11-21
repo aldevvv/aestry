@@ -79,6 +79,30 @@ export const CONSULTATION_INTENTS = [
 export type ConsultationIntent = (typeof CONSULTATION_INTENTS)[number]
 
 /**
+ * How a multi-image generation should differ across items. These are not
+ * interchangeable: distinct directions explore, single-concept variations
+ * preserve one approved symbol, refinement edits an existing image.
+ */
+export const GENERATION_STRATEGIES = [
+  "distinct-directions",
+  "single-concept-variations",
+  "refinement",
+] as const
+
+export type GenerationStrategy = (typeof GENERATION_STRATEGIES)[number]
+
+export const generationPlanSchema = z.object({
+  strategy: z.enum(GENERATION_STRATEGIES),
+  /**
+   * Per-image direction lines for "distinct-directions" (2-4 entries).
+   * Ignored for the other strategies.
+   */
+  directions: z.array(z.string().min(1).max(400)).max(4).nullish(),
+})
+
+export type GenerationPlan = z.infer<typeof generationPlanSchema>
+
+/**
  * Validated contract between the multimodal provider and the orchestrator.
  * The server parses the model's JSON output against this schema before the
  * client ever sees it; malformed output never becomes a fake design brief.
@@ -103,6 +127,8 @@ export const consultationOutcomeSchema = z.object({
   intent: z.enum(CONSULTATION_INTENTS).nullish(),
   /** Optional presentation blocks; unknown or malformed ones are dropped. */
   blocks: z.array(z.unknown()).max(6).nullish(),
+  /** Proposed strategy for an upcoming multi-image generation. */
+  generationPlan: generationPlanSchema.nullish(),
 })
 
 export type ConsultationOutcome = {
@@ -115,6 +141,8 @@ export type ConsultationOutcome = {
   title?: string
   intent: ConsultationIntent
   blocks: InteractionBlock[]
+  /** Proposed strategy for an upcoming multi-image generation. */
+  generationPlan?: z.infer<typeof generationPlanSchema>
   /**
    * False when the model's reply could not be parsed as the structured
    * contract and only its plain text was recovered. No brief is invented

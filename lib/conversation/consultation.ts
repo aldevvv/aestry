@@ -108,6 +108,7 @@ export function parseConsultationReply(text: string): ConsultationOutcome {
           title: sanitizeSessionTitle(data.title),
           intent: data.intent ?? "answer",
           blocks: sanitizeInteractionBlocks(data.blocks),
+          generationPlan: data.generationPlan ?? undefined,
           structured: true,
         }
       }
@@ -115,7 +116,13 @@ export function parseConsultationReply(text: string): ConsultationOutcome {
       // Fall through to plain-text recovery.
     }
   }
-  return { message: text, phase: "clarifying", intent: "answer", blocks: [], structured: false }
+  return {
+    message: text,
+    phase: "clarifying",
+    intent: "answer",
+    blocks: [],
+    structured: false,
+  }
 }
 
 /**

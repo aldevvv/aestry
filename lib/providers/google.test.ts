@@ -365,7 +365,7 @@ describe("generateImagesGoogle", () => {
   const basePayload = {
     providerId: "gemini" as const,
     model: "gemini-test-image",
-    prompt: "test prompt",
+    prompts: ["test prompt", "test prompt"],
     count: 2,
   }
 

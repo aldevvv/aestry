@@ -57,6 +57,10 @@ type ConversationsState = {
   ) => void
   setPhase: (conversationId: string, phase: ConversationPhase) => void
   setBrief: (conversationId: string, brief: DesignBrief) => void
+  setGenerationPlan: (
+    conversationId: string,
+    plan: import("./types").GenerationPlan | null
+  ) => void
   setSkill: (conversationId: string, skillId: SkillId) => void
   setProjectContext: (
     conversationId: string,
@@ -319,6 +323,13 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         brief,
+      }))
+    },
+
+    setGenerationPlan: (conversationId, plan) => {
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        generationPlan: plan ?? undefined,
       }))
     },
 

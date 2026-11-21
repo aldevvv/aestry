@@ -7,7 +7,10 @@ import {
   generateImagesGoogle,
 } from "@/lib/providers/google"
 import { ProviderRequestError } from "@/lib/providers/types"
-import type { GenerationApiResponse } from "@/lib/generation"
+import {
+  composeGenerationPrompts,
+  type GenerationApiResponse,
+} from "@/lib/generation"
 import { requireAccess } from "@/lib/server/access"
 import { readJsonBody, withSlot } from "@/lib/server/limits"
 
@@ -45,6 +48,17 @@ const bodySchema = z.object({
   }),
   count: z.number().int().min(1).max(4),
   refinement: z.string().trim().max(4_000).optional(),
+  /** Consultant-proposed variation strategy; validated and applied per item. */
+  plan: z
+    .object({
+      strategy: z.enum([
+        "distinct-directions",
+        "single-concept-variations",
+        "refinement",
+      ]),
+      directions: z.array(z.string().min(1).max(400)).max(4).optional(),
+    })
+    .optional(),
   referenceImages: z
     .array(referenceImageSchema)
     .max(4)
@@ -72,7 +86,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 400 }
     )
   }
-  const { providerId, model, skillId, brief, count, refinement, referenceImages } =
+  const { providerId, model, skillId, brief, count, refinement, plan, referenceImages } =
     parsed.data
 
   let prompt: string
@@ -97,18 +111,24 @@ export async function POST(request: Request): Promise<NextResponse> {
     )
   }
 
+  // Per-slot prompts: distinct directions explore, variations preserve the
+  // approved concept. Fixed constraints in the base prompt are preserved
+  // verbatim in every slot.
+  const prompts = composeGenerationPrompts(prompt, plan, count)
+
   const result = await withSlot("generation", MAX_CONCURRENT_GENERATIONS, async () => {
     try {
       const results = await generateImagesGoogle({
         providerId,
         model,
-        prompt,
+        prompts,
         count,
         referenceImages,
       })
       const payload: GenerationApiResponse & { prompt: string } = {
         results,
         prompt,
+        prompts,
       }
       return NextResponse.json(payload)
     } catch (error) {
