@@ -20,13 +20,49 @@ export type ImageGenerationResult = {
   warning?: string
 }
 
+/**
+ * Stable application error categories for provider failures. The client
+ * receives the code plus a sanitized description; raw upstream detail
+ * stays in server-side diagnostics.
+ */
+export type ProviderErrorCode =
+  | "AUTH_FAILED"
+  | "PERMISSION_DENIED"
+  | "RATE_LIMITED"
+  | "MODEL_NOT_FOUND"
+  | "SAFETY_BLOCKED"
+  | "TIMEOUT"
+  | "BAD_REQUEST"
+  | "UPSTREAM"
+  | "NETWORK"
+
 export class ProviderRequestError extends Error {
   readonly status: number
+  readonly code: ProviderErrorCode
+  /** True when the same request may succeed after a backoff. */
+  readonly retryable: boolean
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    options?: { code?: ProviderErrorCode; retryable?: boolean }
+  ) {
     super(message)
     this.status = status
+    this.code = options?.code ?? defaultErrorCode(status)
+    this.retryable = options?.retryable ?? (status === 429 || status === 503)
   }
+}
+
+function defaultErrorCode(status: number): ProviderErrorCode {
+  if (status === 401) return "AUTH_FAILED"
+  if (status === 403) return "PERMISSION_DENIED"
+  if (status === 404) return "MODEL_NOT_FOUND"
+  if (status === 429) return "RATE_LIMITED"
+  if (status === 422) return "SAFETY_BLOCKED"
+  if (status === 504) return "TIMEOUT"
+  if (status === 400) return "BAD_REQUEST"
+  return "UPSTREAM"
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

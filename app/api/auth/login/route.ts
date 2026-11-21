@@ -32,9 +32,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json(
       {
         error:
-          "Access control is not configured on this server. Set AESTRY_ACCESS_SECRET to require sign-in.",
+          "Server access is not configured. Set AESTRY_ACCESS_SECRET in the server environment and restart; sign-in is unavailable until then.",
       },
-      { status: 400 }
+      { status: 503 }
     )
   }
   const body = await readJsonBody(request, 4_096)

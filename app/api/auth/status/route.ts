@@ -2,6 +2,7 @@ import { cookies } from "next/headers"
 import { NextResponse } from "next/server"
 
 import {
+  accessMode,
   accessSecret,
   requireAccessForRead,
   SESSION_COOKIE_NAME,
@@ -19,9 +20,21 @@ export async function GET(): Promise<NextResponse> {
   const cookieStore = await cookies()
   const secret = accessSecret()
   if (secret === null) {
-    return NextResponse.json({ configured: false, authenticated: false })
+    // Fail-closed production or an explicitly disabled local mode: tell the
+    // UI the deployment needs configuration instead of pretending to be open.
+    return NextResponse.json(
+      {
+        configured: false,
+        authenticated: false,
+        blocked: accessMode() === "blocked",
+      },
+      { headers: { "Cache-Control": "no-store" } }
+    )
   }
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
   const authenticated = requireAccessForRead(token) === null
-  return NextResponse.json({ configured: true, authenticated })
+  return NextResponse.json(
+    { configured: true, authenticated, blocked: false },
+    { headers: { "Cache-Control": "no-store" } }
+  )
 }

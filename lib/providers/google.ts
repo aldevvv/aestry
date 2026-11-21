@@ -73,40 +73,69 @@ function clientFor(providerId: BuiltinProviderId): {
 }
 
 /**
- * Maps SDK errors to user-facing provider errors. The upstream message
- * (e.g. "API key not valid. Please pass a valid API key.") is the most
- * useful thing to show in chat and never contains credential values;
- * structured events and raw excerpts live in the Terminal diagnostics.
+ * Scrubs credential-shaped substrings from upstream error text before it
+ * reaches the client. API keys (Google "AIza…", OAuth "ya29.…") and long
+ * opaque mixed-case tokens are replaced; everything else is bounded.
+ */
+function sanitizeUpstreamDetail(message: string): string {
+  const scrubbed = message
+    .replace(/AIza[0-9A-Za-z_-]{10,}/g, "[redacted]")
+    .replace(/ya29\.[0-9A-Za-z_-]{10,}/g, "[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{40,}\b/g, (match) =>
+      /[A-Z]/.test(match) && /[0-9]/.test(match) && /[a-z]/.test(match)
+        ? "[redacted]"
+        : match
+    )
+    .replace(/\s+/g, " ")
+    .trim()
+  return scrubbed.length > 300 ? `${scrubbed.slice(0, 300)}…` : scrubbed
+}
+
+/**
+ * Maps SDK errors to a bounded, categorized user-facing contract: stable
+ * error code, safe description, and retryability. Upstream text is
+ * sanitized (credential-shaped strings scrubbed, length bounded) because
+ * SDK messages are useful but never fully trusted; structured events and
+ * raw excerpts live in the Terminal diagnostics.
  */
 function mapSdkError(error: unknown, fallback: string): ProviderRequestError {
   if (error instanceof ApiError) {
     const status =
       error.status >= 400 && error.status < 500 ? error.status : 502
-    const upstream =
-      typeof error.message === "string" ? error.message.trim() : ""
-    if (upstream.length > 0 && upstream.length <= 400) {
-      return new ProviderRequestError(status, upstream)
-    }
-    const categoryDetail =
-      status === 401 || status === 403
-        ? "The server's Google credentials were rejected by the provider."
-        : status === 429
-          ? "Rate limited by the provider — try again shortly."
-          : status === 404
-            ? "The provider does not expose this operation or model."
-            : undefined
-    return new ProviderRequestError(
-      status,
-      categoryDetail ?? `${fallback} (status ${error.status.toString()})`
+    const upstreamDetail = sanitizeUpstreamDetail(
+      typeof error.message === "string" ? error.message : ""
     )
+    const category =
+      status === 401 || status === 403
+        ? { code: "AUTH_FAILED" as const, description: "Google rejected the server credentials." }
+        : status === 429
+          ? { code: "RATE_LIMITED" as const, description: "Rate limited by Google — try again shortly." }
+          : status === 404
+            ? { code: "MODEL_NOT_FOUND" as const, description: "Google does not expose this operation or model." }
+            : null
+    const description = category
+      ? upstreamDetail
+        ? `${category.description} Provider said: ${upstreamDetail}`
+        : category.description
+      : upstreamDetail || `${fallback} (status ${error.status.toString()})`
+    return new ProviderRequestError(status, description, {
+      code: category?.code,
+      retryable: status === 429,
+    })
   }
   if (error instanceof DOMException && error.name === "TimeoutError") {
-    return new ProviderRequestError(504, "The provider took too long to respond.")
+    return new ProviderRequestError(504, "The provider took too long to respond.", {
+      code: "TIMEOUT",
+      retryable: true,
+    })
   }
   if (error instanceof Error && error.name === "AbortError") {
-    return new ProviderRequestError(504, "The provider request was cancelled.")
+    return new ProviderRequestError(504, "The provider request was cancelled.", {
+      code: "TIMEOUT",
+      retryable: true,
+    })
   }
-  return new ProviderRequestError(502, fallback)
+  return new ProviderRequestError(502, fallback, { code: "NETWORK" })
 }
 
 function modelActions(model: unknown): string[] {
@@ -204,33 +233,88 @@ export async function listGoogleModels(
 
 /**
  * Validates a client-chosen model against the provider's actual discovery
- * list. Operator-pinned models (AESTRY_*_MODEL) are always allowed.
- * Deliberately no silent rerouting: an unavailable model is an error.
+ * list AND the requested role's capability: appearing in a discovery list
+ * does not mean the model supports the requested operation. Operator-pinned
+ * models (AESTRY_*_MODEL) are explicitly honored, but even they are checked
+ * against authoritative metadata when it is retrievable — an explicit pin
+ * is a reason to bypass availability, not capability. Deliberately no
+ * silent rerouting: an unavailable or incompatible model is an error.
  */
 export async function assertModelAvailable(
   providerId: BuiltinProviderId,
   model: string,
   role: "chat" | "image"
 ): Promise<void> {
+  const requiredCapability = role === "chat" ? "multimodal" : "image"
   const config = getBuiltinProviderConfig(providerId)
-  if (config) {
-    const pinned =
-      config.providerId === "gemini"
+  const pinned =
+    config && config.providerId === "gemini"
+      ? role === "chat"
+        ? config.chatModelOverride
+        : config.imageModelOverride
+      : config
         ? role === "chat"
           ? config.chatModelOverride
           : config.imageModelOverride
-        : role === "chat"
-          ? config.chatModelOverride
-          : config.imageModelOverride
-    if (pinned === model) return
+        : undefined
+
+  // Capability check for exact-model metadata. A 404 rejects (typoed pin,
+  // removed model); a clean classification must match the requested role;
+  // other metadata failures are the operator pin's documented escape hatch.
+  const checkTargetedMetadata = async (): Promise<void> => {
+    try {
+      const { client } = clientFor(providerId)
+      const details = await client.models.get({ model })
+      const capability = classifyProviderModel("google", model, modelActions(details))
+      if (capability && capability !== requiredCapability) {
+        throw new ProviderRequestError(
+          400,
+          `"${model}" is not a ${requiredCapability} model. Choose a model with the right capability for this operation.`,
+          { code: "MODEL_NOT_FOUND" }
+        )
+      }
+      return
+    } catch (error) {
+      if (error instanceof ProviderRequestError) throw error
+      if (error instanceof ApiError && error.status === 404) {
+        throw new ProviderRequestError(
+          400,
+          "The selected model is not available on the configured provider. Refresh the model list and choose again.",
+          { code: "MODEL_NOT_FOUND" }
+        )
+      }
+      if (pinned === model) return
+      throw new ProviderRequestError(
+        400,
+        "The selected model is not available on the configured provider. Refresh the model list and choose again."
+      )
+    }
   }
+
+  // Operator-pinned models validate against targeted metadata only — they
+  // must keep working when the discovery list is unavailable.
+  if (pinned === model) {
+    await checkTargetedMetadata()
+    return
+  }
+
   const models = await listGoogleModels(providerId)
-  if (!models.some((entry) => entry.id === model)) {
-    throw new ProviderRequestError(
-      400,
-      "The selected model is not available on the configured provider. Refresh the model list and choose again."
-    )
+  const discovered = models.find((entry) => entry.id === model)
+
+  if (discovered) {
+    if (discovered.capability !== requiredCapability) {
+      throw new ProviderRequestError(
+        400,
+        `"${model}" is not a ${requiredCapability} model on the configured provider. Choose a model with the right capability for this operation.`,
+        { code: "MODEL_NOT_FOUND" }
+      )
+    }
+    return
   }
+
+  // Unpinned and undiscovered: verify the exact model exists and fits the
+  // role before any billable operation.
+  await checkTargetedMetadata()
 }
 
 type ConsultationTurn = { role: "user" | "assistant"; text: string }

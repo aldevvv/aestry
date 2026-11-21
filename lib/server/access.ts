@@ -30,6 +30,32 @@ export function isAccessConfigured(): boolean {
   return accessSecret() !== null
 }
 
+/**
+ * How privileged requests are treated right now:
+ *
+ * - "protected": AESTRY_ACCESS_SECRET is set — a valid operator session
+ *   cookie is required.
+ * - "local-dev": no secret and the server runs outside production
+ *   (NODE_ENV !== "production"). Deliberate local convenience: reads stay
+ *   open, writes are restricted to same-origin browser requests, and the
+ *   gap is surfaced in the UI instead of hidden. This mode is NOT a
+ *   production configuration.
+ * - "blocked": no secret and the server runs in production, or the
+ *   operator disabled local mode explicitly (AESTRY_ALLOW_LOCAL_MODE=false).
+ *   Privileged operations fail closed with configuration guidance — a
+ *   publicly reachable deployment serving server-owned credentials must
+ *   never fall back to anonymous access.
+ */
+export type AccessMode = "protected" | "local-dev" | "blocked"
+
+export function accessMode(): AccessMode {
+  const secret = accessSecret()
+  if (secret !== null) return "protected"
+  if (process.env.NODE_ENV === "production") return "blocked"
+  if (process.env.AESTRY_ALLOW_LOCAL_MODE === "false") return "blocked"
+  return "local-dev"
+}
+
 function sessionSignature(secret: string, expiry: number): string {
   return createHmac("sha256", secret)
     .update(`aestry-session:${expiry.toString()}`)
@@ -109,26 +135,47 @@ function denial(status: number, error: string): NextResponse {
  * access is denied, or null when the request may proceed. Routes running
  * under cacheComponents should read the session cookie via next/headers
  * (which marks the route as runtime) and pass it here.
+ *
+ * CSRF policy for state-changing methods, in every mode: a present Origin
+ * header must match the deployment host. A missing Origin (non-browser
+ * caller) is governed per mode — allowed in local-dev, and in protected
+ * mode it still requires a valid session. SameSite=Strict cookies are the
+ * primary browser defense; the Origin check is an additional layer, not
+ * the only one.
  */
 export function requireAccess(
   request: Request,
   sessionToken?: string | null
 ): NextResponse | null {
-  const secret = accessSecret()
-  if (secret === null) {
-    // Unprotected mode. State-changing methods must at least originate from
-    // this application's own origin; reads stay open (documented risk).
-    const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method)
-    if (mutating && !isSameOriginRequest(request)) {
+  const mode = accessMode()
+
+  const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method)
+  if (mutating) {
+    const origin = request.headers.get("origin")
+    if (origin !== null && !isSameOriginRequest(request)) {
       return denial(
         403,
         "Cross-site requests are rejected. Use the Aestry app directly."
       )
     }
+  }
+
+  if (mode === "blocked") {
+    return denial(
+      503,
+      "Server access is not configured. Set AESTRY_ACCESS_SECRET in the server environment and restart; privileged operations are disabled until then."
+    )
+  }
+
+  if (mode === "local-dev") {
+    // Deliberate local convenience. Reads stay open; writes were already
+    // Origin-checked above. Documented as unsuitable for public exposure.
     return null
   }
+
+  const secret = accessSecret()
   const token = sessionToken ?? readSessionCookie(request)
-  if (token && verifySessionToken(token, secret)) {
+  if (secret !== null && token && verifySessionToken(token, secret)) {
     return null
   }
   return denial(
@@ -152,9 +199,16 @@ export function secretsMatch(candidate: string, secret: string): boolean {
 export function requireAccessForRead(
   sessionToken: string | null | undefined
 ): NextResponse | null {
+  const mode = accessMode()
+  if (mode === "blocked") {
+    return denial(
+      503,
+      "Server access is not configured. Set AESTRY_ACCESS_SECRET in the server environment and restart; privileged operations are disabled until then."
+    )
+  }
+  if (mode === "local-dev") return null
   const secret = accessSecret()
-  if (secret === null) return null
-  if (sessionToken && verifySessionToken(sessionToken, secret)) {
+  if (secret !== null && sessionToken && verifySessionToken(sessionToken, secret)) {
     return null
   }
   return denial(

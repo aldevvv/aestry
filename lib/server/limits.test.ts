@@ -1,12 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
 import {
+  acquireSlot,
   loginThrottled,
   readJsonBody,
   recordLoginFailure,
-  releaseSlot,
   resetLoginThrottle,
-  tryAcquireSlot,
   withSlot,
 } from "./limits"
 
@@ -52,20 +51,50 @@ describe("readJsonBody", () => {
 })
 
 describe("concurrency slots", () => {
-  it("saturates and releases", async () => {
-    releaseSlot("test-ops")
-    releaseSlot("test-ops")
-    expect(tryAcquireSlot("test-ops", 2)).toBe(true)
-    expect(tryAcquireSlot("test-ops", 2)).toBe(true)
-    expect(tryAcquireSlot("test-ops", 2)).toBe(false)
-    releaseSlot("test-ops")
-    expect(tryAcquireSlot("test-ops", 2)).toBe(true)
-    releaseSlot("test-ops")
-    releaseSlot("test-ops")
+  it("saturates and releases", () => {
+    const first = acquireSlot("test-ops", 2)
+    const second = acquireSlot("test-ops", 2)
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(acquireSlot("test-ops", 2)).toBeNull()
+    first?.release()
+    expect(acquireSlot("test-ops", 2)).not.toBeNull()
+    second?.release()
+  })
+
+  it("release is idempotent: double release never underflows the counter", () => {
+    const slot = acquireSlot("double-release", 1)
+    slot?.release()
+    expect(slot?.released).toBe(true)
+    // A second (buggy or defensive) release must be a no-op.
+    slot?.release()
+    // The slot is fully available again — exactly one was returned.
+    const reclaimed = acquireSlot("double-release", 1)
+    expect(reclaimed).not.toBeNull()
+    reclaimed?.release()
+  })
+
+  it("release after an exception path still restores availability", () => {
+    const attempt = (): void => {
+      const slot = acquireSlot("error-path", 1)
+      try {
+        throw new Error("simulated failure")
+      } finally {
+        slot?.release()
+      }
+    }
+    expect(attempt).toThrow("simulated failure")
+    expect(acquireSlot("error-path", 1)).not.toBeNull()
+  })
+
+  it("tracks the released flag for ownership assertions", () => {
+    const slot = acquireSlot("flag-check", 1)
+    expect(slot?.released).toBe(false)
+    slot?.release()
+    expect(slot?.released).toBe(true)
   })
 
   it("withSlot runs work inside a slot and rejects when saturated", async () => {
-    releaseSlot("with-slot")
     let running: (() => void) | undefined
     const gate = new Promise<void>((resolve) => {
       running = resolve
@@ -78,7 +107,6 @@ describe("concurrency slots", () => {
     expect(second).toBeNull()
     running?.()
     await expect(first).resolves.toBe("first")
-    releaseSlot("with-slot")
   })
 })
 

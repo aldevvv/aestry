@@ -51,20 +51,39 @@ export async function readJsonBody(
 
 const activeSlots = new Map<string, number>()
 
-/** Attempts to take one of `max` concurrent slots for `key`. */
-export function tryAcquireSlot(key: string, max: number): boolean {
-  const active = activeSlots.get(key) ?? 0
-  if (active >= max) return false
-  activeSlots.set(key, active + 1)
-  return true
+/**
+ * A held concurrency slot with single-owner release semantics. `release`
+ * is idempotent: however many code paths reach it (request handler,
+ * stream teardown, error paths), the slot is returned exactly once and
+ * the counter can never underflow.
+ */
+export type ConcurrencySlot = {
+  /** True once the slot has been released. */
+  readonly released: boolean
+  /** Returns the slot. Safe to call multiple times. */
+  release: () => void
 }
 
-export function releaseSlot(key: string): void {
+/** Takes one of `max` concurrent slots for `key`, or null when saturated. */
+export function acquireSlot(key: string, max: number): ConcurrencySlot | null {
   const active = activeSlots.get(key) ?? 0
-  if (active <= 1) {
-    activeSlots.delete(key)
-  } else {
-    activeSlots.set(key, active - 1)
+  if (active >= max) return null
+  activeSlots.set(key, active + 1)
+  let released = false
+  return {
+    get released() {
+      return released
+    },
+    release() {
+      if (released) return
+      released = true
+      const current = activeSlots.get(key) ?? 0
+      if (current <= 1) {
+        activeSlots.delete(key)
+      } else {
+        activeSlots.set(key, current - 1)
+      }
+    },
   }
 }
 
@@ -74,11 +93,12 @@ export async function withSlot<T>(
   max: number,
   operation: () => Promise<T>
 ): Promise<T | null> {
-  if (!tryAcquireSlot(key, max)) return null
+  const slot = acquireSlot(key, max)
+  if (!slot) return null
   try {
     return await operation()
   } finally {
-    releaseSlot(key)
+    slot.release()
   }
 }
 

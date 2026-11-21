@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  accessMode,
   accessSecret,
   createSessionToken,
   isSameOriginRequest,
   requireAccess,
+  requireAccessForRead,
   secretsMatch,
   verifySessionToken,
 } from "./access"
@@ -82,7 +84,9 @@ describe("requireAccess", () => {
     expect(requireAccess(withBadCookie)?.status).toBe(401)
   })
 
-  it("blocks cross-site writes even with a stolen session attempt", () => {
+  it("rejects cross-site mutations even when a session is present", () => {
+    // CSRF defense in depth: SameSite=Strict is the primary layer; a
+    // mismatched Origin is rejected regardless of session validity.
     vi.stubEnv("AESTRY_ACCESS_SECRET", "secret-1")
     const crossSite = new Request("https://aestry.local/api/chat", {
       method: "POST",
@@ -91,9 +95,55 @@ describe("requireAccess", () => {
         cookie: `aestry_session=${createSessionToken("secret-1")}`,
       },
     })
-    // A valid session wins over the origin check in protected mode: the
-    // HttpOnly SameSite=Strict cookie is the real CSRF defense there.
-    expect(requireAccess(crossSite)).toBeNull()
+    expect(requireAccess(crossSite)?.status).toBe(403)
+  })
+})
+
+describe("access modes", () => {
+  it("is local-dev without a secret outside production", () => {
+    vi.stubEnv("AESTRY_ACCESS_SECRET", "")
+    expect(accessMode()).toBe("local-dev")
+    const read = new Request("https://aestry.local/api/logs")
+    expect(requireAccess(read)).toBeNull()
+  })
+
+  it("fails closed in production without a secret", () => {
+    vi.stubEnv("AESTRY_ACCESS_SECRET", "")
+    vi.stubEnv("NODE_ENV", "production")
+    expect(accessMode()).toBe("blocked")
+
+    const read = requireAccess(new Request("https://aestry.local/api/logs"))
+    expect(read?.status).toBe(503)
+    const write = requireAccess(
+      new Request("https://aestry.local/api/chat", {
+        method: "POST",
+        headers: { origin: "https://aestry.local" },
+      })
+    )
+    expect(write?.status).toBe(503)
+    expect(requireAccessForRead(null)?.status).toBe(503)
+    expect(read?.body).not.toBeNull()
+  })
+
+  it("supports an explicit local-mode opt-out", () => {
+    vi.stubEnv("AESTRY_ACCESS_SECRET", "")
+    vi.stubEnv("AESTRY_ALLOW_LOCAL_MODE", "false")
+    expect(accessMode()).toBe("blocked")
+    expect(requireAccess(new Request("https://aestry.local/api/logs"))?.status).toBe(503)
+  })
+
+  it("stays protected in production with a secret", () => {
+    vi.stubEnv("AESTRY_ACCESS_SECRET", "secret-1")
+    vi.stubEnv("NODE_ENV", "production")
+    expect(accessMode()).toBe("protected")
+    const withSession = new Request("https://aestry.local/api/chat", {
+      method: "POST",
+      headers: {
+        origin: "https://aestry.local",
+        cookie: `aestry_session=${createSessionToken("secret-1")}`,
+      },
+    })
+    expect(requireAccess(withSession)).toBeNull()
   })
 })
 

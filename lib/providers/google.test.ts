@@ -148,10 +148,9 @@ describe("listGoogleModels", () => {
         })
       }),
     }
-    await expect(listGoogleModels("gemini")).rejects.toMatchObject({
-      status: 401,
-      message: "API key not valid. Please pass a valid API key.",
-    })
+    await expect(listGoogleModels("gemini")).rejects.toThrow(
+      /API key not valid\. Please pass a valid API key\./
+    )
   })
 
   it("falls back to a category message when upstream text is oversized", async () => {
@@ -160,9 +159,41 @@ describe("listGoogleModels", () => {
         throw new ApiError({ message: "x".repeat(500), status: 401 })
       }),
     }
+    await expect(listGoogleModels("gemini")).rejects.toThrow(
+      "Google rejected the server credentials."
+    )
+  })
+
+  it("scrubs credential-shaped substrings from upstream messages", async () => {
+    sdkState.models = {
+      list: vi.fn(async () => {
+        throw new ApiError({
+          message:
+            "Request failed for key AIzaSyD-1234567890abcdefGHIJKLmnopqrstu and token ya29.aBcDEF-1234567890abcdefGHIJKL",
+          status: 400,
+        })
+      }),
+    }
+    let message = ""
+    try {
+      await listGoogleModels("gemini")
+    } catch (caught) {
+      message = (caught as Error).message
+    }
+    expect(message).toContain("[redacted]")
+    expect(message).not.toContain("AIzaSyD")
+    expect(message).not.toContain("ya29.aBcDEF")
+  })
+
+  it("classifies rate limits as retryable", async () => {
+    sdkState.models = {
+      list: vi.fn(async () => {
+        throw new ApiError({ message: "Resource exhausted.", status: 429 })
+      }),
+    }
     await expect(listGoogleModels("gemini")).rejects.toMatchObject({
-      status: 401,
-      message: "The server's Google credentials were rejected by the provider.",
+      code: "RATE_LIMITED",
+      retryable: true,
     })
   })
 })
@@ -374,7 +405,8 @@ describe("generateImagesGoogle", () => {
     expect(results[0].ok).toBe(true)
     expect(results[1]).toEqual({
       ok: false,
-      error: "Quota exceeded for images per day.",
+      error:
+        "Rate limited by Google — try again shortly. Provider said: Quota exceeded for images per day.",
     })
   })
 
@@ -393,8 +425,59 @@ describe("generateImagesGoogle", () => {
 })
 
 describe("assertModelAvailable", () => {
-  it("allows operator-pinned models without discovery", async () => {
+  it("allows operator-pinned models with matching authoritative capability", async () => {
     vi.stubEnv("AESTRY_GEMINI_CHAT_MODEL", "pinned-model")
+    sdkState.models = {
+      get: vi.fn(async () => ({
+        name: "models/pinned-model",
+        supportedActions: ["generateContent"],
+      })),
+    }
+    await expect(
+      assertModelAvailable("gemini", "pinned-model", "chat")
+    ).resolves.toBeUndefined()
+  })
+
+  it("rejects pinned models whose capability mismatches the role", async () => {
+    vi.stubEnv("AESTRY_GEMINI_CHAT_MODEL", "pinned-image-model")
+    sdkState.models = {
+      get: vi.fn(async () => ({
+        name: "models/pinned-image-model",
+        supportedActions: ["generateContent"],
+      })),
+    }
+    // classifyProviderModel treats a generateContent-capable unknown id as
+    // multimodal, so pin a genuinely image-classified id instead.
+    sdkState.models = {
+      get: vi.fn(async () => ({
+        name: "models/pinned-image-model",
+        supportedActions: ["predictLongRunning"],
+      })),
+    }
+    await expect(
+      assertModelAvailable("gemini", "pinned-image-model", "chat")
+    ).rejects.toMatchObject({ status: 400, code: "MODEL_NOT_FOUND" })
+  })
+
+  it("rejects pinned models that do not exist (typoed env override)", async () => {
+    vi.stubEnv("AESTRY_GEMINI_CHAT_MODEL", "typo-model")
+    sdkState.models = {
+      get: vi.fn(async () => {
+        throw new ApiError({ message: "not found", status: 404 })
+      }),
+    }
+    await expect(
+      assertModelAvailable("gemini", "typo-model", "chat")
+    ).rejects.toMatchObject({ status: 400, code: "MODEL_NOT_FOUND" })
+  })
+
+  it("allows pinned models when metadata is merely unavailable", async () => {
+    vi.stubEnv("AESTRY_GEMINI_CHAT_MODEL", "pinned-model")
+    sdkState.models = {
+      get: vi.fn(async () => {
+        throw new Error("network unreachable")
+      }),
+    }
     await expect(
       assertModelAvailable("gemini", "pinned-model", "chat")
     ).resolves.toBeUndefined()
@@ -414,5 +497,21 @@ describe("assertModelAvailable", () => {
     await expect(
       assertModelAvailable("gemini", "not-a-real-model", "chat")
     ).rejects.toMatchObject({ status: 400 })
+  })
+
+  it("rejects role-incompatible models from the discovery list", async () => {
+    sdkState.models = {
+      list: vi.fn(async () =>
+        (async function* () {
+          yield {
+            name: "models/gemini-test-flash",
+            supportedActions: ["generateContent"],
+          }
+        })()
+      ),
+    }
+    await expect(
+      assertModelAvailable("gemini", "gemini-test-flash", "image")
+    ).rejects.toMatchObject({ status: 400, code: "MODEL_NOT_FOUND" })
   })
 })

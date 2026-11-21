@@ -43,3 +43,6 @@ next-env.d.ts
 # editor swap files
 *.swp
 *.swo
+
+# exception: the documented example is tracked
+!.env.example
