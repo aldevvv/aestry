@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 
+import type { DesignProject } from "@/lib/projects/types"
 import type { SkillId } from "@/lib/skills/registry"
 import type { Conversation } from "./types"
 
@@ -22,7 +23,7 @@ interface AestryDatabase extends DBSchema {
   conversations: {
     key: string
     value: Conversation
-    indexes: { "by-updated": string }
+    indexes: { "by-updated": string; "by-project": string }
   }
   blobs: {
     key: string
@@ -33,6 +34,11 @@ interface AestryDatabase extends DBSchema {
     key: string
     value: GeneratedAsset
     indexes: { "by-created": string }
+  }
+  projects: {
+    key: string
+    value: DesignProject
+    indexes: { "by-updated": string }
   }
 }
 
@@ -61,7 +67,7 @@ export type GeneratedAsset = {
 }
 
 const DB_NAME = "aestry"
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 let databasePromise: Promise<IDBPDatabase<AestryDatabase>> | null = null
 
@@ -87,6 +93,18 @@ function getDatabase(): Promise<IDBPDatabase<AestryDatabase>> | null {
         if (!db.objectStoreNames.contains("assets")) {
           const assets = db.createObjectStore("assets", { keyPath: "id" })
           assets.createIndex("by-created", "createdAt")
+        }
+        // v2 -> v3: Projects. Existing conversations are untouched and
+        // remain unassigned; the index is created for new assignments.
+        if (!db.objectStoreNames.contains("projects")) {
+          const projects = db.createObjectStore("projects", { keyPath: "id" })
+          projects.createIndex("by-updated", "updatedAt")
+        }
+        {
+          const conversations = transaction.objectStore("conversations")
+          if (!conversations.indexNames.contains("by-project")) {
+            conversations.createIndex("by-project", "projectId")
+          }
         }
         // Backfill (idempotent): only when coming from a pre-assets schema.
         if (db.objectStoreNames.contains("blobs") && _oldVersion < 2) {
@@ -301,6 +319,56 @@ export async function loadImageBlob(id: string): Promise<
 export async function listGeneratedAssets(): Promise<GeneratedAsset[]> {
   return withDatabase(async (db) => {
     const all = await db.getAllFromIndex("assets", "by-created")
+    return all.reverse()
+  })
+}
+
+export async function saveProject(project: DesignProject): Promise<void> {
+  return withDatabase(async (db) => {
+    await db.put("projects", structuredClone(project))
+  })
+}
+
+export async function loadProject(id: string): Promise<DesignProject | undefined> {
+  return withDatabase(async (db) => db.get("projects", id))
+}
+
+export async function listProjects(): Promise<DesignProject[]> {
+  return withDatabase(async (db) => {
+    const all = await db.getAllFromIndex("projects", "by-updated")
+    return all.reverse()
+  })
+}
+
+/**
+ * Deletes a Project record and unassigns its conversations — chats return
+ * to the global unassigned collection with IDs, messages, and assets fully
+ * intact. Never a cascading destruction.
+ */
+export async function deleteProjectRecord(id: string): Promise<void> {
+  return withDatabase(async (db) => {
+    const tx = db.transaction(["projects", "conversations"], "readwrite")
+    const conversationStore = tx.objectStore("conversations")
+    const assignedIds = await conversationStore.index("by-project").getAllKeys(id)
+    for (const conversationId of assignedIds) {
+      const conversation = await conversationStore.get(conversationId)
+      if (conversation) {
+        const unassigned = { ...conversation }
+        delete unassigned.projectId
+        await conversationStore.put(unassigned as Conversation)
+      }
+    }
+    await tx.objectStore("projects").delete(id)
+    await tx.done
+  })
+}
+
+/** Conversations assigned to a Project, newest activity first. */
+export async function listProjectConversations(
+  projectId: string
+): Promise<Conversation[]> {
+  return withDatabase(async (db) => {
+    const all = await db.getAllFromIndex("conversations", "by-project", projectId)
     return all.reverse()
   })
 }

@@ -25,6 +25,7 @@ export type ConversationSummary = {
   id: string
   title: string
   titleSource?: ConversationTitleSource
+  projectId?: string
   updatedAt: string
 }
 
@@ -38,7 +39,7 @@ type ConversationsState = {
   storageWarning: string | null
   /** Sidebar Recent entries, newest activity first. */
   summaryList: ConversationSummary[] | null
-  createConversation: (skillId: SkillId) => Conversation
+  createConversation: (skillId: SkillId, projectId?: string) => Conversation
   setActive: (id: string | null) => void
   restoreFromStorage: (id: string) => Promise<Conversation | undefined>
   refreshSummaryList: () => Promise<void>
@@ -154,6 +155,7 @@ export const useConversations = create<ConversationsState>()((set, get) => {
                 id: record.id,
                 title: record.title,
                 titleSource: record.titleSource,
+                projectId: record.projectId,
                 updatedAt: record.updatedAt,
               })),
             })
@@ -168,12 +170,13 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       return refreshInFlight
     },
 
-    createConversation: (skillId) => {
+    createConversation: (skillId, projectId) => {
       const now = new Date().toISOString()
       const conversation: Conversation = {
         id: crypto.randomUUID(),
         title: "New conversation",
         titleSource: "fallback",
+        projectId: projectId || undefined,
         skillId,
         phase: "idle",
         messages: [],

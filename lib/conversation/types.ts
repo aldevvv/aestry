@@ -91,6 +91,8 @@ export type Conversation = {
   id: string
   title: string
   titleSource?: ConversationTitleSource
+  /** Owning Project, when the conversation is organized into one. */
+  projectId?: string
   skillId: SkillId
   phase: ConversationPhase
   messages: Message[]

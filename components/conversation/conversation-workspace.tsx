@@ -40,6 +40,7 @@ import {
   selectedModelContextWindow,
   useProviders,
 } from "@/lib/provider-store"
+import { useProjects } from "@/lib/projects/store"
 import {
   isSkillId,
 } from "@/lib/skills/registry"
@@ -89,11 +90,21 @@ export function ConversationWorkspace({
   const consultation = useProviders((state) => state.selections.consultation)
   const generation = useProviders((state) => state.selections.generation)
   const refreshStatus = useProviders((state) => state.refreshStatus)
+  const projects = useProjects((state) => state.projects)
+  const refreshProjects = useProjects((state) => state.refresh)
 
   // Server-side provider statuses gate the composer and role selects.
   React.useEffect(() => {
     void refreshStatus()
-  }, [refreshStatus])
+    void refreshProjects()
+  }, [refreshStatus, refreshProjects])
+
+  // The conversation's Project contributes user-authored context to the
+  // consultation (bounded, clearly-labeled non-authoritative layer).
+  const project =
+    conversation?.projectId != null
+      ? projects?.find((entry) => entry.id === conversation.projectId)
+      : undefined
 
   const [compacting, setCompacting] = React.useState(false)
   // Transport state lives in the module-level stream store: the first send
@@ -178,6 +189,13 @@ export function ConversationWorkspace({
             model: consultation.model,
             skillId: latest.skillId,
             history,
+            project: project
+              ? {
+                  name: project.name,
+                  description: project.description,
+                  instructions: project.instructions,
+                }
+              : undefined,
             mode: "compact",
           }),
           signal: AbortSignal.timeout(180_000),
@@ -245,7 +263,7 @@ export function ConversationWorkspace({
         setCompacting(false)
       }
     },
-    [consultation]
+    [consultation, project]
   )
 
   /**
@@ -431,6 +449,13 @@ export function ConversationWorkspace({
             referenceImages:
               referenceImages.length > 0 ? referenceImages : undefined,
             projectContext: projectContextSummary,
+            project: project
+              ? {
+                  name: project.name,
+                  description: project.description,
+                  instructions: project.instructions,
+                }
+              : undefined,
           },
           {
             onDelta: (delta) => {
@@ -546,7 +571,7 @@ export function ConversationWorkspace({
         useStreamState.getState().setBusy(targetId, false)
       }
     },
-    [busyAny, consultation, conversation, confirmCompactionNeeded, router, runCompaction]
+    [busyAny, consultation, conversation, confirmCompactionNeeded, project, router, runCompaction]
   )
 
   const runGeneration = React.useCallback(

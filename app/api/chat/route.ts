@@ -151,8 +151,12 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
           input.brief ?? null,
           input.projectContext,
           undefined,
-          // The first substantive consultation proposes the session title.
-          { wantsTitle: !input.history.some((turn) => turn.role === "assistant") }
+          {
+            // The first substantive consultation proposes the session title.
+            wantsTitle: !input.history.some((turn) => turn.role === "assistant"),
+            // User-authored Project context, clearly labeled non-authoritative.
+            project: input.project,
+          }
         )
 
   // Compaction is a single JSON round-trip; consultation streams.

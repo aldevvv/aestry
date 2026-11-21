@@ -175,6 +175,17 @@ export const chatRequestSchema = z.object({
     .max(4)
     .optional(),
   projectContext: z.string().max(8_000).optional(),
+  /**
+   * User-authored Project context for conversations inside a Project.
+   * Bounded here; injected as a clearly-labeled non-authoritative layer.
+   */
+  project: z
+    .object({
+      name: z.string().trim().min(1).max(60),
+      description: z.string().max(300).optional(),
+      instructions: z.string().max(2_000).optional(),
+    })
+    .optional(),
   /** "compact" runs the auto-compaction pass instead of consultation. */
   mode: z.enum(["consult", "compact"]).default("consult"),
   /** Consultation streams over SSE by default. */

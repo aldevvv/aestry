@@ -5,8 +5,10 @@ import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
 import { toast } from "sonner"
 import {
+  FolderIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  PlusIcon,
   SearchIcon,
   SquarePenIcon,
   Trash2Icon,
@@ -45,6 +47,9 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
@@ -64,6 +69,9 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar"
 import { useConversations } from "@/lib/conversation/store"
+import { useProjects } from "@/lib/projects/store"
+import type { DesignProject } from "@/lib/projects/types"
+import { ProjectFormDialog } from "@/components/project-view"
 import {
   APP_NAV_ITEMS,
   UPCOMING_NAV_ITEMS,
@@ -114,6 +122,17 @@ function SidebarSearchDialog({
   onOpenChange: (open: boolean) => void
 }) {
   const router = useRouter()
+  const projects = useProjects((state) => state.projects)
+  const refreshProjects = useProjects((state) => state.refresh)
+  const summaryList = useConversations((state) => state.summaryList)
+  const refreshSummaryList = useConversations((state) => state.refreshSummaryList)
+
+  React.useEffect(() => {
+    if (open) {
+      void refreshProjects()
+      void refreshSummaryList()
+    }
+  }, [open, refreshProjects, refreshSummaryList])
 
   const navigate = React.useCallback(
     (href: string) => {
@@ -123,19 +142,25 @@ function SidebarSearchDialog({
     [onOpenChange, router]
   )
 
+  // Title-level search only: message-history search is deliberately out of
+  // scope to keep this bounded and fast.
+  const recentSummaries = (summaryList ?? [])
+    .filter((summary) => !summary.projectId)
+    .slice(0, 20)
+
   return (
     <CommandDialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Search pages"
-      description="Jump to an Aestry page"
+      title="Search"
+      description="Jump to a page, project, or conversation"
     >
       {/* CommandDialog does not provide the cmdk store itself; the
           <Command> wrapper supplies the context Input and List require. */}
       <Command>
-        <CommandInput placeholder="Search pages..." />
+        <CommandInput placeholder="Search..." />
         <CommandList>
-          <CommandEmpty>No pages found.</CommandEmpty>
+          <CommandEmpty>No results found.</CommandEmpty>
           <CommandGroup heading="Pages">
             {APP_NAV_ITEMS.map((item) => (
               <CommandItem
@@ -148,6 +173,34 @@ function SidebarSearchDialog({
               </CommandItem>
             ))}
           </CommandGroup>
+          {projects && projects.length > 0 ? (
+            <CommandGroup heading="Projects">
+              {projects.map((project) => (
+                <CommandItem
+                  key={project.id}
+                  value={`project ${project.name}`}
+                  onSelect={() => navigate(`/project/${project.id}`)}
+                >
+                  <FolderIcon />
+                  {project.name}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
+          {recentSummaries.length > 0 ? (
+            <CommandGroup heading="Conversations">
+              {recentSummaries.map((summary) => (
+                <CommandItem
+                  key={summary.id}
+                  value={`chat ${summary.title}`}
+                  onSelect={() => navigate(`/chat/${summary.id}`)}
+                >
+                  <SquarePenIcon />
+                  <span className="truncate">{summary.title}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          ) : null}
         </CommandList>
       </Command>
     </CommandDialog>
@@ -247,10 +300,14 @@ function SidebarUpcomingGroup({ items }: { items: UpcomingNavItem[] }) {
 function RecentRowMenu({
   conversationId,
   title,
+  projects,
+  onMoveToProject,
   onRename,
 }: {
   conversationId: string
   title: string
+  projects: DesignProject[]
+  onMoveToProject: (projectId: string) => void
   onRename: () => void
 }) {
   const router = useRouter()
@@ -306,6 +363,29 @@ function RecentRowMenu({
             <PencilIcon />
             Rename
           </DropdownMenuItem>
+          {projects.length > 0 ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <FolderIcon />
+                Move to project
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-64 min-w-44 overflow-y-auto">
+                {projects.map((project) => (
+                  <DropdownMenuItem
+                    key={project.id}
+                    onSelect={() => {
+                      onMoveToProject(project.id)
+                      if (isMobile) {
+                        setOpenMobile(false)
+                      }
+                    }}
+                  >
+                    <span className="truncate">{project.name}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
           <DropdownMenuItem
             variant="destructive"
             onSelect={() => {
@@ -417,6 +497,9 @@ function SidebarRecent() {
   const { isMobile, setOpenMobile } = useSidebar()
   const summaryList = useConversations((state) => state.summaryList)
   const refreshSummaryList = useConversations((state) => state.refreshSummaryList)
+  const projects = useProjects((state) => state.projects)
+  const refreshProjects = useProjects((state) => state.refresh)
+  const moveConversation = useProjects((state) => state.moveConversation)
   const [renaming, setRenaming] = React.useState<{
     id: string
     title: string
@@ -424,7 +507,14 @@ function SidebarRecent() {
 
   React.useEffect(() => {
     void refreshSummaryList()
-  }, [refreshSummaryList])
+    void refreshProjects()
+  }, [refreshSummaryList, refreshProjects])
+
+  // Recent holds unassigned conversations only: Project chats live in their
+  // Project's list, never redundantly in both sections.
+  const recentSummaries = (summaryList ?? []).filter(
+    (summary) => !summary.projectId
+  )
 
   return (
     <SidebarGroup className="min-h-0 flex-1 overflow-y-auto pb-4 group-data-[collapsible=icon]:hidden">
@@ -440,12 +530,12 @@ function SidebarRecent() {
                 />
               ))}
             </>
-          ) : summaryList.length === 0 ? (
+          ) : recentSummaries.length === 0 ? (
             <p className="px-2 py-1 text-xs text-muted-foreground">
               No conversations yet.
             </p>
           ) : (
-            summaryList.slice(0, RECENT_ROW_LIMIT).map((summary) => {
+            recentSummaries.slice(0, RECENT_ROW_LIMIT).map((summary) => {
               const active = pathname === `/chat/${summary.id}`
               return (
                 <SidebarMenuItem key={summary.id} className="group/row relative">
@@ -467,6 +557,10 @@ function SidebarRecent() {
                     <RecentRowMenu
                       conversationId={summary.id}
                       title={summary.title}
+                      projects={projects ?? []}
+                      onMoveToProject={(projectId) =>
+                        void moveConversation(summary.id, projectId)
+                      }
                       onRename={() =>
                         setRenaming({ id: summary.id, title: summary.title })
                       }
@@ -484,6 +578,78 @@ function SidebarRecent() {
           conversationId={renaming.id}
           currentTitle={renaming.title}
           onClose={() => setRenaming(null)}
+        />
+      ) : null}
+    </SidebarGroup>
+  )
+}
+
+function SidebarProjectsGroup() {
+  const router = useRouter()
+  const pathname = usePathname()
+  const { isMobile, setOpenMobile } = useSidebar()
+  const projects = useProjects((state) => state.projects)
+  const refreshProjects = useProjects((state) => state.refresh)
+  const [creating, setCreating] = React.useState(false)
+
+  React.useEffect(() => {
+    void refreshProjects()
+  }, [refreshProjects])
+
+  return (
+    <SidebarGroup className="pb-1">
+      <div className="flex items-center justify-between px-2">
+        <SidebarGroupLabel className="px-0">Projects</SidebarGroupLabel>
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          aria-label="New Project"
+          className="flex size-5 items-center justify-center rounded-md text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:hidden"
+        >
+          <PlusIcon className="size-3.5" />
+        </button>
+      </div>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {projects === null ? (
+            <div className="mx-1.5 h-7 animate-pulse rounded-md bg-muted/60" />
+          ) : projects.length === 0 ? (
+            <p className="px-2 py-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+              Group chats into projects.
+            </p>
+          ) : (
+            projects.map((project) => {
+              const active = pathname === `/project/${project.id}`
+              return (
+                <SidebarMenuItem key={project.id}>
+                  <SidebarMenuButton
+                    render={<Link href={`/project/${project.id}`} />}
+                    isActive={active}
+                    tooltip={project.name}
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => {
+                      if (isMobile) {
+                        setOpenMobile(false)
+                      }
+                    }}
+                  >
+                    <FolderIcon />
+                    <span className="truncate">{project.name}</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )
+            })
+          )}
+        </SidebarMenu>
+      </SidebarGroupContent>
+      {creating ? (
+        <ProjectFormDialog
+          key="new-project"
+          onClose={() => setCreating(false)}
+          onSaved={(project) => {
+            setCreating(false)
+            router.push(`/project/${project.id}`)
+          }}
         />
       ) : null}
     </SidebarGroup>
@@ -516,6 +682,7 @@ function AppSidebar() {
         <SidebarNavGroup
           items={APP_NAV_ITEMS.filter((item) => item.group === "workspace")}
         />
+        <SidebarProjectsGroup />
         <SidebarNavGroup
           label="Preferences"
           items={APP_NAV_ITEMS.filter((item) => item.group === "preferences")}
