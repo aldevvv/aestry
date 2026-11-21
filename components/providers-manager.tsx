@@ -20,6 +20,7 @@ import {
   providerLabel,
   useProviders,
   type BuiltinProviderId,
+  type ProviderModel,
   type ProviderStatus,
 } from "@/lib/provider-store"
 
@@ -29,6 +30,10 @@ import {
  * operator verify connections and choose role models — it never collects
  * API keys.
  */
+
+// Stable fallback for selectors: allocating `?? []` inside a store selector
+// returns a fresh reference per call and trips React's snapshot loop guard.
+const EMPTY_MODELS: ProviderModel[] = []
 
 function StatusBadge({
   status,
@@ -64,9 +69,8 @@ function ProviderCard({
   const verification = useProviders(
     (state) => state.verification[providerId]
   )
-  const models = useProviders(
-    (state) => state.modelsCache[providerId] ?? []
-  )
+  const models =
+    useProviders((state) => state.modelsCache[providerId]) ?? EMPTY_MODELS
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
