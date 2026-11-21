@@ -1,6 +1,7 @@
 import { create } from "zustand"
 
 import {
+  deleteConversationRecord,
   loadConversation,
   saveConversation,
 } from "./persistence"
@@ -28,6 +29,7 @@ type ConversationsState = {
   setActive: (id: string | null) => void
   restoreFromStorage: (id: string) => Promise<Conversation | undefined>
   forgetConversation: (id: string) => void
+  deleteConversation: (id: string) => Promise<void>
   appendMessage: (conversationId: string, message: Message) => void
   updateMessage: (
     conversationId: string,
@@ -136,11 +138,36 @@ export const useConversations = create<ConversationsState>()((set, get) => {
           }))
           return undefined
         }
+        // An interrupted run must never look successful: normalize any
+        // generation that was persisted while still in flight.
+        const normalized: Conversation = {
+          ...restored,
+          generations: Object.fromEntries(
+            Object.entries(restored.generations).map(([generationId, generation]) => [
+              generationId,
+              generation.status === "running"
+                ? {
+                    ...generation,
+                    status: "done" as const,
+                    items: generation.items.map((item) =>
+                      item.status === "pending"
+                        ? {
+                            ...item,
+                            status: "failed" as const,
+                            error: "Generation was interrupted before it finished.",
+                          }
+                        : item
+                    ),
+                  }
+                : generation,
+            ])
+          ),
+        }
         set((state) => ({
-          conversations: { ...state.conversations, [id]: restored },
+          conversations: { ...state.conversations, [id]: normalized },
           activeId: id,
         }))
-        return restored
+        return normalized
       } catch {
         return undefined
       }
@@ -155,6 +182,17 @@ export const useConversations = create<ConversationsState>()((set, get) => {
           activeId: state.activeId === id ? null : state.activeId,
         }
       }),
+
+    deleteConversation: async (id) => {
+      get().forgetConversation(id)
+      try {
+        await deleteConversationRecord(id)
+      } catch {
+        useConversations.setState({
+          storageWarning: "The conversation could not be deleted from storage.",
+        })
+      }
+    },
 
     appendMessage: (conversationId, message) => {
       updateConversation(conversationId, (conversation) => ({

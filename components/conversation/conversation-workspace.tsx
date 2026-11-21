@@ -80,6 +80,7 @@ export function ConversationWorkspace({
   const mounted = useMounted()
   const conversation = useConversations(selectActiveConversation)
   const notFoundIds = useConversations((state) => state.notFoundIds)
+  const storageWarning = useConversations((state) => state.storageWarning)
   const providers = useProviders((state) => state.providers)
   const selections = useProviders((state) => state.selections)
   const consultation = resolveSelection(providers, selections.consultation)
@@ -768,6 +769,14 @@ export function ConversationWorkspace({
           >
             <ArrowDownIcon />
           </Button>
+        </div>
+      ) : null}
+      {storageWarning ? (
+        <div
+          role="status"
+          className="shrink-0 bg-warning/10 px-4 py-2 text-xs text-warning sm:px-6"
+        >
+          <div className="mx-auto w-full max-w-2xl">{storageWarning}</div>
         </div>
       ) : null}
       <div className="shrink-0 border-t border-border bg-background px-4 pb-3 pt-3 sm:px-6">
