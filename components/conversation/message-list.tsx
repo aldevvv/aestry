@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ActivityOrb, ThinkingOrbIndicator } from "@/components/thinking-indicator"
 import { useImageUrl } from "@/components/conversation/image-url"
+import { Markdown } from "@/components/conversation/markdown"
 import { getSkill, type SkillId } from "@/lib/skills/registry"
 import type {
   GenerationRecord,
@@ -227,8 +228,8 @@ export function MessageListItem({
                 ))}
               </div>
             ) : null}
-            <div className="w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground">
-              <p className="whitespace-pre-wrap break-words">{content.text}</p>
+            <div className="w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground [&_p]:my-1.5">
+              <Markdown content={content.text} />
             </div>
           </>
         ) : null}
@@ -239,9 +240,7 @@ export function MessageListItem({
   if (content.type === "assistant-text") {
     return (
       <div className="flex flex-col gap-1">
-        <p className="text-sm/relaxed text-foreground whitespace-pre-wrap break-words">
-          {content.text}
-        </p>
+        <Markdown content={content.text} />
       </div>
     )
   }
@@ -408,10 +407,10 @@ export function MessageList({
       {streamingText ? (
         <div className="flex justify-start">
           <div className="max-w-full">
-            <p className="text-sm/relaxed text-foreground whitespace-pre-wrap break-words">
-              {streamingText}
-              <span className="animate-pulse">▍</span>
-            </p>
+            <Markdown content={streamingText} />
+            <span className="animate-pulse text-sm text-foreground" aria-hidden="true">
+              ▍
+            </span>
           </div>
         </div>
       ) : null}
