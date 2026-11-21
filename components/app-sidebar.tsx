@@ -21,7 +21,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -256,6 +255,7 @@ function RecentRowMenu({
 }) {
   const router = useRouter()
   const { isMobile, setOpenMobile } = useSidebar()
+  const [confirmOpen, setConfirmOpen] = React.useState(false)
 
   const handleDelete = async () => {
     const wasActive = useConversations.getState().activeId === conversationId
@@ -268,69 +268,74 @@ function RecentRowMenu({
   }
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            aria-label={`Conversation actions for ${title}`}
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover/row:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring data-[state=open]:opacity-100"
-          >
-            <MoreHorizontalIcon className="size-4" />
-          </button>
-        }
-      />
-      <DropdownMenuContent
-        side={isMobile ? "bottom" : "right"}
-        align="start"
-        className="min-w-36"
-      >
-        <DropdownMenuItem
-          onSelect={() => {
-            onRename()
-            if (isMobile) {
-              setOpenMobile(false)
-            }
-          }}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label={`Conversation actions for ${title}`}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity outline-none group-hover/row:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-sidebar-ring data-[state=open]:opacity-100"
+            >
+              <MoreHorizontalIcon className="size-4" />
+            </button>
+          }
+        />
+        <DropdownMenuContent
+          side={isMobile ? "bottom" : "right"}
+          align="start"
+          className="min-w-36"
         >
-          <PencilIcon />
-          Rename
-        </DropdownMenuItem>
-        <AlertDialog>
-          <AlertDialogTrigger
-            render={
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={(event) => event.preventDefault()}
-              >
-                <Trash2Icon />
-                Delete
-              </DropdownMenuItem>
-            }
-          />
-          <AlertDialogContent size="sm">
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete “{title}”?</AlertDialogTitle>
-              <AlertDialogDescription>
-                The conversation and its message history are removed from
-                this browser. Generated images stay in your asset library.
-                This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                size="sm"
-                onClick={() => void handleDelete()}
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuItem
+            onSelect={() => {
+              onRename()
+              if (isMobile) {
+                setOpenMobile(false)
+              }
+            }}
+          >
+            <PencilIcon />
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => {
+              // Controlled confirmation outside the menu: a nested trigger
+              // unmounts with the menu and flashes the dialog.
+              setConfirmOpen(true)
+              if (isMobile) {
+                setOpenMobile(false)
+              }
+            }}
+          >
+            <Trash2Icon />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{title}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The conversation and its message history are removed from this
+              browser. Generated images stay in your asset library. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              size="sm"
+              onClick={() => void handleDelete()}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 
