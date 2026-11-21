@@ -138,7 +138,6 @@ const markdownComponents: Components = {
   h6: ({ children }) => (
     <p className="mt-2.5 text-sm font-medium text-muted-foreground first:mt-0">{children}</p>
   ),
-  p: ({ children }) => <p className="text-sm/relaxed">{children}</p>,
   hr: () => <hr className="my-3 border-border" />,
   strong: ({ children }) => (
     <strong className="font-semibold text-foreground">{children}</strong>
@@ -164,7 +163,7 @@ const markdownComponents: Components = {
 
 export function Markdown({ content }: { content: string }) {
   return (
-    <div className="min-w-0 break-words text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-1.5">
+    <div className="min-w-0 break-words text-sm/relaxed text-foreground [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-1.5">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={allowedUri}

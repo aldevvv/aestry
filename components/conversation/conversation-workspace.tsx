@@ -35,6 +35,7 @@ import {
   selectActiveConversation,
   useConversations,
 } from "@/lib/conversation/store"
+import { useStreamState } from "@/lib/conversation/stream-state"
 import {
   selectedModelContextWindow,
   useProviders,
@@ -94,9 +95,16 @@ export function ConversationWorkspace({
     void refreshStatus()
   }, [refreshStatus])
 
-  const [busy, setBusy] = React.useState(false)
   const [compacting, setCompacting] = React.useState(false)
-  const [streamingText, setStreamingText] = React.useState<string | null>(null)
+  // Transport state lives in the module-level stream store: the first send
+  // navigates routes and remounts this component mid-stream.
+  const busyAny = useStreamState((state) => Object.keys(state.busyIds).length > 0)
+  const conversationBusy = useStreamState((state) =>
+    conversation?.id ? Boolean(state.busyIds[conversation.id]) : false
+  )
+  const streamingText = useStreamState((state) =>
+    conversation?.id ? (state.streaming[conversation.id] ?? null) : null
+  )
   const missing =
     mounted &&
     Boolean(conversationId) &&
@@ -291,16 +299,17 @@ export function ConversationWorkspace({
 
   const handleSend = React.useCallback(
     async (text: string, files: File[]) => {
-      if (!consultation || busy) return
-      setBusy(true)
+      if (!consultation || busyAny) return
+      let target = conversation
+      if (!target) {
+        // The consultant assigns the asset skill from the request; the
+        // conversation starts neutral until then.
+        target = useConversations.getState().createConversation("app-icon")
+        router.push(`/chat/${target.id}`)
+      }
+      const targetId = target.id
+      useStreamState.getState().setBusy(targetId, true)
       try {
-        let target = conversation
-        if (!target) {
-          // The consultant assigns the asset skill from the request; the
-          // conversation starts neutral until then.
-          target = useConversations.getState().createConversation("app-icon")
-          router.push(`/chat/${target.id}`)
-        }
 
         // Auto-compact BEFORE the new message is appended, when the context
         // approaches the consultation model's window. The compaction point
@@ -412,7 +421,6 @@ export function ConversationWorkspace({
         )
         // Streamed consultation: the server extracts the user-facing message,
         // so deltas render live; the validated outcome arrives at the end.
-        let streaming = ""
         const result = await streamChat(
           {
             providerId: consultation.providerId,
@@ -426,19 +434,18 @@ export function ConversationWorkspace({
           },
           {
             onDelta: (delta) => {
-              streaming += delta
-              setStreamingText(streaming)
+              useStreamState.getState().appendDelta(targetId, delta)
             },
             onUsage: (promptTokens) => {
               // Authoritative context usage for the pie indicator.
               useConversations
                 .getState()
-                .setContextTokens(target.id, promptTokens)
+                .setContextTokens(targetId, promptTokens)
             },
           },
           AbortSignal.timeout(180_000)
         )
-        setStreamingText(null)
+        useStreamState.getState().clearStreaming(targetId)
         if (!result.ok) {
           useConversations.getState().appendMessage(target.id, {
             id: crypto.randomUUID(),
@@ -525,21 +532,21 @@ export function ConversationWorkspace({
           error instanceof DOMException && error.name === "TimeoutError"
             ? "The consultation timed out."
             : "Could not reach the Aestry server."
-        if (conversation) {
-          useConversations.getState().appendMessage(conversation.id, {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: { type: "error", error: message, scope: "consultation" },
-            createdAt: new Date().toISOString(),
-          })
-          useConversations.getState().setPhase(conversation.id, "error")
-        }
+        // Report against the target conversation — on a first send this is a
+        // fresh conversation, not the (null) dashboard state.
+        useConversations.getState().appendMessage(targetId, {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: { type: "error", error: message, scope: "consultation" },
+          createdAt: new Date().toISOString(),
+        })
+        useConversations.getState().setPhase(targetId, "error")
         toast.error(message)
       } finally {
-        setBusy(false)
+        useStreamState.getState().setBusy(targetId, false)
       }
     },
-    [busy, consultation, conversation, confirmCompactionNeeded, router, runCompaction]
+    [busyAny, consultation, conversation, confirmCompactionNeeded, router, runCompaction]
   )
 
   const runGeneration = React.useCallback(
@@ -885,7 +892,7 @@ export function ConversationWorkspace({
         <div className="mx-auto w-full max-w-2xl animate-in fade-in-0 slide-in-from-bottom-2 mt-8 duration-500">
           <Composer
             variant="welcome"
-            busy={busy}
+            busy={busyAny}
             suggestions={WELCOME_SUGGESTIONS}
             onSend={(text, files) => void handleSend(text, files)}
           />
@@ -924,7 +931,7 @@ export function ConversationWorkspace({
             }
             onUseAsReference={useAsReference}
           />
-          {busy && conversation.phase === "consulting" ? (
+          {conversationBusy && conversation.phase === "consulting" ? (
             <div className="mt-6">
               <ThinkingOrbIndicator activity="consult" />
             </div>
@@ -974,7 +981,7 @@ export function ConversationWorkspace({
           ) : null}
           <Composer
             variant="conversation"
-            busy={busy}
+            busy={conversationBusy}
             contextTokens={conversation.contextTokens ?? null}
             compacting={compacting}
             onCompact={() => void runCompaction(conversation.id)}

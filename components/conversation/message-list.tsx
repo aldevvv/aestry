@@ -61,7 +61,7 @@ function UserTextBubble({ text }: { text: string }) {
   }, [text])
 
   return (
-    <div className="flex flex-col items-start gap-1">
+    <div className="flex flex-col items-end gap-1">
       <div className="w-fit max-w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground [&_p]:my-1.5">
         <div
           ref={innerRef}
@@ -282,7 +282,7 @@ export function MessageListItem({
 
   if (message.role === "user") {
     return (
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col items-end gap-2">
         {content.type === "text" ? (
           <>
             {content.references && content.references.length > 0 ? (
