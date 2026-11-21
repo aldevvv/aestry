@@ -26,13 +26,16 @@ export default function ProvidersPage() {
         </span>
         <div className="flex min-w-0 flex-col gap-1 text-sm">
           <p className="font-medium text-foreground">
-            Keys never leave this device
+            How your keys are handled
           </p>
           <p className="text-sm/relaxed text-muted-foreground">
-            API keys are stored in this browser&rsquo;s local storage and are
-            sent only to the provider endpoint you configured. They are never
-            synced, logged, or transmitted anywhere else, and removing a
-            provider deletes its key.
+            API keys are stored in this browser&rsquo;s localStorage and are
+            not encrypted at rest. When you consult or generate, a key travels
+            from this browser to your self-hosted Aestry server and from there
+            to the provider you configured for that operation. The server uses
+            a key only for the request it belongs to and never persists or
+            logs it. Keep deployments you do not trust to yourself behind
+            appropriate access controls.
           </p>
         </div>
       </div>

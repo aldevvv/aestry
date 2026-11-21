@@ -18,6 +18,7 @@ const BLOCKED_HOSTNAMES = new Set([
   "localhost.localdomain",
   "metadata.google.internal",
   "instance-data",
+  "169.254.169.254",
 ])
 
 /**
