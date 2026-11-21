@@ -20,7 +20,7 @@ import {
   extractPartialMessage,
   streamChat,
 } from "@/lib/conversation/streaming"
-import { ThinkingOrbIndicator } from "@/components/thinking-indicator"
+import { ThinkingOrbIndicator, WelcomeOrb } from "@/components/thinking-indicator"
 import {
   ESTIMATED_TOKENS_PER_IMAGE,
   estimateTokens,
@@ -784,6 +784,7 @@ export function ConversationWorkspace({
     return (
       <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col justify-center px-4 py-8 sm:px-6">
         <div className="animate-in fade-in-0 slide-in-from-bottom-2 flex flex-col gap-2 text-center duration-500">
+          <WelcomeOrb className="mb-4 flex justify-center" />
           <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
             What would you like to create?
           </h1>

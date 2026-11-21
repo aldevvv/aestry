@@ -10,9 +10,10 @@ import { ThinkingOrb, type OrbState } from "thinking-orbs"
  */
 export type ThinkingActivity = "consult" | "generate" | "compact" | "models"
 
-const ACTIVITY_STATES: Record<ThinkingActivity, OrbState[]> = {
-  consult: ["working", "weaving", "shaping", "solving", "connecting"],
-  generate: ["composing", "shaping", "working", "weaving", "breathing"],
+/** Orb states each activity cycles through; the one registry every orb consumer shares. */
+export const ACTIVITY_STATES: Record<ThinkingActivity, OrbState[]> = {
+  consult: ["working", "weaving", "searching", "solving", "connecting"],
+  generate: ["composing", "weaving", "working", "searching", "breathing"],
   compact: ["solving", "working", "breathing"],
   models: ["connecting", "working", "breathing"],
 }
@@ -30,14 +31,42 @@ const ACTIVITY_PHRASES: Record<ThinkingActivity, string[]> = {
   models: ["Load Skills", "Connecting", "Loading Models"],
 }
 
-function useRotatingIndex(length: number, intervalMs: number): number {
+/**
+ * The welcome orb is ambient: it cycles the consultation states with no
+ * status semantics, so conversation screens keep all activity labeling.
+ */
+export const WELCOME_ORB_ACTIVITY: ThinkingActivity = "consult"
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)"
+
+function subscribeToReducedMotion(onChange: () => void): () => void {
+  const query = window.matchMedia(REDUCED_MOTION_QUERY)
+  query.addEventListener("change", onChange)
+  return () => query.removeEventListener("change", onChange)
+}
+
+/** Live prefers-reduced-motion flag; false during SSR and before hydration. */
+function usePrefersReducedMotion(): boolean {
+  return React.useSyncExternalStore(
+    subscribeToReducedMotion,
+    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
+    () => false,
+  )
+}
+
+function useRotatingIndex(
+  length: number,
+  intervalMs: number,
+  active = true,
+): number {
   const [index, setIndex] = React.useState(0)
   React.useEffect(() => {
+    if (!active) return
     const timer = setInterval(() => {
       setIndex((previous) => (previous + 1) % length)
     }, intervalMs)
     return () => clearInterval(timer)
-  }, [length, intervalMs])
+  }, [active, length, intervalMs])
   return index
 }
 
@@ -51,8 +80,11 @@ export function ActivityOrb({
   size?: 20 | 32 | 64
   paused?: boolean
 }) {
-  const index = useRotatingIndex(ACTIVITY_STATES[activity].length, 2600)
   const states = ACTIVITY_STATES[activity]
+  const reducedMotion = usePrefersReducedMotion()
+  // Reduced motion keeps a single stable state; the orb package itself then
+  // paints one static frame instead of animating.
+  const index = useRotatingIndex(states.length, 2600, !reducedMotion)
   return (
     <ThinkingOrb
       state={states[index % states.length]}
@@ -96,6 +128,20 @@ export function ThinkingOrbIndicator({
       <span className="text-xs tabular-nums text-muted-foreground/70">
         {seconds.toString()}s
       </span>
+    </div>
+  )
+}
+
+/**
+ * Ambient dashboard orb for the welcome screen. Shares the conversation
+ * rotation engine and states, but carries no activity semantics: no label,
+ * no elapsed timer, hidden from assistive tech, and never implying that a
+ * request is running. Reduced motion renders one stable state.
+ */
+export function WelcomeOrb({ className }: { className?: string }) {
+  return (
+    <div aria-hidden="true" className={className}>
+      <ActivityOrb activity={WELCOME_ORB_ACTIVITY} size={64} />
     </div>
   )
 }
