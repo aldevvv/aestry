@@ -456,9 +456,15 @@ export function ConversationWorkspace({
           skill?: unknown
           brief?: unknown
           clarification?: unknown
+          title?: unknown
           structured?: unknown
         }
         const state = useConversations.getState()
+        // The AI-proposed session title lands once, on the first reply, and
+        // never overwrites a user-renamed conversation (the store guards).
+        if (typeof outcome.title === "string" && outcome.title.trim()) {
+          state.setTitle(target.id, outcome.title, "ai")
+        }
         if (typeof outcome.message === "string" && outcome.message.trim()) {
           state.appendMessage(target.id, {
             id: crypto.randomUUID(),

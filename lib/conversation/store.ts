@@ -2,6 +2,7 @@ import { create } from "zustand"
 
 import {
   deleteConversationRecord,
+  listConversations,
   loadConversation,
   saveConversation,
 } from "./persistence"
@@ -9,6 +10,7 @@ import {
   conversationTitleFromPrompt,
   type Conversation,
   type ConversationPhase,
+  type ConversationTitleSource,
   type GenerationItem,
   type GenerationRecord,
   type Message,
@@ -16,6 +18,14 @@ import {
 } from "./types"
 import type { SkillId } from "@/lib/skills/registry"
 import type { DesignBrief } from "@/lib/skills/registry"
+
+/** Compact sidebar entry; the full record loads on open. */
+export type ConversationSummary = {
+  id: string
+  title: string
+  titleSource?: ConversationTitleSource
+  updatedAt: string
+}
 
 type ConversationsState = {
   conversations: Record<string, Conversation>
@@ -25,11 +35,19 @@ type ConversationsState = {
   notFoundIds: string[]
   /** Set when a persistence write fails; data stays in memory. */
   storageWarning: string | null
+  /** Sidebar Recent entries, newest activity first. */
+  summaryList: ConversationSummary[] | null
   createConversation: (skillId: SkillId) => Conversation
   setActive: (id: string | null) => void
   restoreFromStorage: (id: string) => Promise<Conversation | undefined>
+  refreshSummaryList: () => Promise<void>
   forgetConversation: (id: string) => void
   deleteConversation: (id: string) => Promise<void>
+  setTitle: (
+    conversationId: string,
+    title: string,
+    source: ConversationTitleSource
+  ) => void
   appendMessage: (conversationId: string, message: Message) => void
   updateMessage: (
     conversationId: string,
@@ -75,6 +93,12 @@ export const useConversations = create<ConversationsState>()((set, get) => {
     })
   }
 
+  function refreshSummaries(): void {
+    void get()
+      .refreshSummaryList()
+      .catch(() => undefined)
+  }
+
   function updateConversation(
     conversationId: string,
     updater: (conversation: Conversation) => Conversation
@@ -101,12 +125,30 @@ export const useConversations = create<ConversationsState>()((set, get) => {
     hydrated: false,
     notFoundIds: [],
     storageWarning: null,
+    summaryList: null,
+
+    refreshSummaryList: async () => {
+      try {
+        const records = await listConversations()
+        set({
+          summaryList: records.map((record) => ({
+            id: record.id,
+            title: record.title,
+            titleSource: record.titleSource,
+            updatedAt: record.updatedAt,
+          })),
+        })
+      } catch {
+        set({ summaryList: [] })
+      }
+    },
 
     createConversation: (skillId) => {
       const now = new Date().toISOString()
       const conversation: Conversation = {
         id: crypto.randomUUID(),
         title: "New conversation",
+        titleSource: "fallback",
         skillId,
         phase: "idle",
         messages: [],
@@ -123,10 +165,27 @@ export const useConversations = create<ConversationsState>()((set, get) => {
         activeId: conversation.id,
       }))
       persistConversationRecord(conversation)
+      refreshSummaries()
       return conversation
     },
 
     setActive: (id) => set({ activeId: id }),
+
+    setTitle: (conversationId, title, source) => {
+      const existing = get().conversations[conversationId]
+      // A user-set title is authoritative: automatic titles never overwrite it.
+      if (existing && existing.titleSource === "user" && source !== "user") {
+        return
+      }
+      const trimmed = title.trim()
+      if (!trimmed) return
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        title: trimmed,
+        titleSource: source,
+      }))
+      refreshSummaries()
+    },
 
     restoreFromStorage: async (id) => {
       const existing = get().conversations[id]
@@ -195,19 +254,21 @@ export const useConversations = create<ConversationsState>()((set, get) => {
           storageWarning: "The conversation could not be deleted from storage.",
         })
       }
+      void get().refreshSummaryList()
     },
 
     appendMessage: (conversationId, message) => {
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         title:
-          conversation.title === "New conversation" &&
+          (conversation.titleSource ?? "fallback") === "fallback" &&
           message.role === "user" &&
           message.content.type === "text"
             ? conversationTitleFromPrompt(message.content.text)
             : conversation.title,
         messages: [...conversation.messages, message],
       }))
+      refreshSummaries()
     },
 
     updateMessage: (conversationId, messageId, content) => {

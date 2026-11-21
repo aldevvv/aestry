@@ -58,9 +58,17 @@ export type Message = {
   createdAt: string
 }
 
+/**
+ * Title provenance: "fallback" titles may be replaced by an AI-generated
+ * or user-set title; "ai" titles may still be replaced by the user;
+ * "user" titles are authoritative and never overwritten automatically.
+ */
+export type ConversationTitleSource = "fallback" | "ai" | "user"
+
 export type Conversation = {
   id: string
   title: string
+  titleSource?: ConversationTitleSource
   skillId: SkillId
   phase: ConversationPhase
   messages: Message[]
@@ -88,8 +96,12 @@ export type Conversation = {
   updatedAt: string
 }
 
+export const SESSION_TITLE_FALLBACK_MAX = 48
+
 export function conversationTitleFromPrompt(prompt: string): string {
   const compact = prompt.replace(/\s+/g, " ").trim()
   if (!compact) return "New conversation"
-  return compact.length > 48 ? `${compact.slice(0, 48)}…` : compact
+  return compact.length > SESSION_TITLE_FALLBACK_MAX
+    ? `${compact.slice(0, SESSION_TITLE_FALLBACK_MAX)}…`
+    : compact
 }
