@@ -111,6 +111,8 @@ function ModelPicker() {
           variant="outline"
           size="sm"
           render={<Link href="/settings" />}
+          // The render target is an anchor, not a native button.
+          nativeButton={false}
           onClick={() => setOpen(false)}
         >
           Configure in Settings

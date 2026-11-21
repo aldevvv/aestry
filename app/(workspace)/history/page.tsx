@@ -33,7 +33,9 @@ export default function HistoryPage() {
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button render={<Link href="/" />}>Start creating</Button>
+          <Button render={<Link href="/" />} nativeButton={false}>
+            Start creating
+          </Button>
         </EmptyContent>
       </Empty>
     </div>
