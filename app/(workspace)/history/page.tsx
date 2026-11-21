@@ -1,3 +1,4 @@
+import type { Metadata } from "next"
 import Link from "next/link"
 import { ImagePlusIcon } from "lucide-react"
 
@@ -10,6 +11,10 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty"
+
+export const metadata: Metadata = {
+  title: "History",
+}
 
 export default function HistoryPage() {
   return (

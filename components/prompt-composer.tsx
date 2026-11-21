@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useMounted } from "@/hooks/use-mounted"
+import { useProviders } from "@/lib/provider-store"
 
 const MAX_ATTACHMENTS = 4
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -84,6 +86,12 @@ const EXAMPLE_PROMPTS = [
 
 function ModelPicker() {
   const [open, setOpen] = React.useState(false)
+  const providers = useProviders((state) => state.providers)
+  const mounted = useMounted()
+  // Most recently added provider is the one generation will use first.
+  const active = mounted
+    ? providers[providers.length - 1]
+    : undefined
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -92,7 +100,7 @@ function ModelPicker() {
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Model selection"
+            aria-label={active ? `Provider: ${active.label}` : "Model selection"}
           >
             <CpuIcon />
           </Button>
@@ -100,22 +108,31 @@ function ModelPicker() {
       />
       <PopoverContent align="end" className="w-80">
         <PopoverHeader>
-          <PopoverTitle>No model configured</PopoverTitle>
+          <PopoverTitle>
+            {active ? active.label : "No model configured"}
+          </PopoverTitle>
           <PopoverDescription>
-            Aestry generates assets through bring-your-own-key AI providers.
-            Configure a provider to make the model selector and generation
-            available.
+            {active
+              ? "This provider will be used for generation once the pipeline is wired up."
+              : "Aestry generates assets through bring-your-own-key AI providers. Configure one to make the model selector and generation available."}
           </PopoverDescription>
         </PopoverHeader>
+        {active ? (
+          <p className="text-xs text-muted-foreground">
+            {active.kind === "google"
+              ? "Built-in · Google Gemini"
+              : active.baseUrl}
+            {active.model ? ` · ${active.model}` : ""}
+          </p>
+        ) : null}
         <Button
           variant="outline"
           size="sm"
-          render={<Link href="/settings" />}
-          // The render target is an anchor, not a native button.
+          render={<Link href="/providers" />}
           nativeButton={false}
           onClick={() => setOpen(false)}
         >
-          Configure in Settings
+          {active ? "Manage providers" : "Add a provider"}
         </Button>
       </PopoverContent>
     </Popover>
@@ -304,10 +321,10 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
         <p className="mt-3 text-center text-xs text-muted-foreground">
           Generation is available once an AI provider is configured.{" "}
           <Link
-            href="/settings"
+            href="/providers"
             className="font-medium text-foreground underline underline-offset-4"
           >
-            Set up providers in Settings
+            Set up providers
           </Link>
         </p>
       )}

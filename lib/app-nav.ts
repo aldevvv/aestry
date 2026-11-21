@@ -8,7 +8,7 @@ import {
 } from "lucide-react"
 
 export type AppNavItem = {
-  href: "/" | "/history" | "/settings"
+  href: "/" | "/history" | "/settings" | "/providers"
   label: string
   icon: LucideIcon
   group: "workspace" | "preferences"
@@ -33,6 +33,12 @@ export const APP_NAV_ITEMS: AppNavItem[] = [
     icon: SettingsIcon,
     group: "preferences",
   },
+  {
+    href: "/providers",
+    label: "Providers",
+    icon: KeyRoundIcon,
+    group: "preferences",
+  },
 ]
 
 /**
@@ -46,6 +52,5 @@ export type UpcomingNavItem = {
 }
 
 export const UPCOMING_NAV_ITEMS: UpcomingNavItem[] = [
-  { label: "Providers", icon: KeyRoundIcon },
   { label: "Templates", icon: LayoutTemplateIcon },
 ]

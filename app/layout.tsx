@@ -14,7 +14,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aestry",
+  title: {
+    default: "Aestry",
+    template: "%s · Aestry",
+  },
   description:
     "An open-source, local-first AI design studio for creating app icons, project logos, and Open Graph images.",
 };

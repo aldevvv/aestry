@@ -1,9 +1,9 @@
 "use client"
 
-import * as React from "react"
 import { useTheme } from "next-themes"
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react"
 
+import { useMounted } from "@/hooks/use-mounted"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -14,17 +14,9 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { SidebarTrigger } from "@/components/ui/sidebar"
 
-// SSR-safe hydration detector: the server snapshot is false, the client
-// snapshot is true, and React re-syncs after hydration without any effects.
-const subscribeNever = () => () => {}
-
 function ThemeMenu() {
   const { theme, setTheme } = useTheme()
-  const mounted = React.useSyncExternalStore(
-    subscribeNever,
-    () => true,
-    () => false
-  )
+  const mounted = useMounted()
   // Before hydration the icon must match the server output, so it stays a
   // neutral sun until mounted; after that it reflects the active theme.
   const Icon = mounted && theme === "dark" ? MoonIcon : SunIcon

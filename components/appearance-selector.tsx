@@ -1,9 +1,9 @@
 "use client"
 
-import * as React from "react"
 import { useTheme } from "next-themes"
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react"
 
+import { useMounted } from "@/hooks/use-mounted"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 const THEME_OPTIONS = [
@@ -12,17 +12,11 @@ const THEME_OPTIONS = [
   { value: "system", label: "System", icon: MonitorIcon },
 ] as const
 
-// SSR-safe hydration detector: the server snapshot is false, the client
-// snapshot is true, and React re-syncs after hydration without any effects.
-const subscribeNever = () => () => {}
-
 function AppearanceSelector() {
   const { theme, setTheme } = useTheme()
-  const mounted = React.useSyncExternalStore(
-    subscribeNever,
-    () => true,
-    () => false
-  )
+  // next-themes resolves the persisted theme on the client only; render a
+  // stable placeholder until mounted so SSR markup always matches hydration.
+  const mounted = useMounted()
 
   if (!mounted) {
     return <div aria-hidden="true" className="h-9 w-63 rounded-lg bg-muted" />

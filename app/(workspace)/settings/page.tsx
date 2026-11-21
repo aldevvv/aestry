@@ -1,7 +1,14 @@
-import { KeyRoundIcon, HardDriveIcon } from "lucide-react"
+import type { Metadata } from "next"
+import Link from "next/link"
+import { HardDriveIcon, KeyRoundIcon } from "lucide-react"
 
 import { AppearanceSelector } from "@/components/appearance-selector"
+import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+
+export const metadata: Metadata = {
+  title: "Settings",
+}
 
 function SettingsSection({
   title,
@@ -39,7 +46,7 @@ function UnavailablePanel({
       </span>
       <div className="flex min-w-0 flex-col gap-1 text-sm">
         <p className="font-medium text-foreground">{title}</p>
-        <p className="text-sm/relaxed text-muted-foreground">{children}</p>
+        <div className="text-sm/relaxed text-muted-foreground">{children}</div>
       </div>
     </div>
   )
@@ -65,11 +72,20 @@ export default function SettingsPage() {
       <Separator />
       <SettingsSection
         title="AI providers"
-        description="Aestry uses bring-your-own-key access to image generation providers. Nothing is configured or stored yet."
+        description="Aestry uses bring-your-own-key access to image generation providers. Keys are stored locally in this browser."
       >
-        <UnavailablePanel icon={<KeyRoundIcon />} title="No providers configured">
-          Provider configuration arrives in an upcoming release. Until then, no
-          API keys are requested, stored, or shared.
+        <UnavailablePanel icon={<KeyRoundIcon />} title="Manage your providers">
+          Add the built-in Google Gemini integration or any OpenAI-compatible
+          endpoint on the providers page.
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            render={<Link href="/providers" />}
+            nativeButton={false}
+          >
+            Go to Providers
+          </Button>
         </UnavailablePanel>
       </SettingsSection>
       <Separator />
@@ -77,10 +93,10 @@ export default function SettingsPage() {
         title="Data &amp; storage"
         description="Aestry is designed to be local-first and self-hostable."
       >
-        <UnavailablePanel icon={<HardDriveIcon />} title="Local storage not enabled">
-          Prompts and generated assets are intended to live in your browser, not
-          on a server. Persistence is not enabled in this version, so nothing is
-          stored between visits yet.
+        <UnavailablePanel icon={<HardDriveIcon />} title="Local storage in progress">
+          Provider settings are stored in this browser. Generated assets are
+          not persisted yet — local history arrives with the generation
+          pipeline.
         </UnavailablePanel>
       </SettingsSection>
     </div>
