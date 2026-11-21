@@ -24,6 +24,12 @@ export type GenerationItem = {
   imageId?: string
   mimeType?: string
   error?: string
+  /**
+   * Distinguishes "generated and durably stored" from "generated but only
+   * viewable this session" — persistence failures must not read as the
+   * same durable success as normal images.
+   */
+  persistence?: "persisted" | "session-only"
 }
 
 export type GenerationRecord = {

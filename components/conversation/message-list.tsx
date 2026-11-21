@@ -233,6 +233,14 @@ function GeneratedImageTile({
         unoptimized
         className={`w-full object-contain ${aspectClassName(aspect)}`}
       />
+      {item.persistence === "session-only" ? (
+        <span
+          className="absolute top-2 left-2 rounded-md bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border"
+          title="This image could not be saved to browser storage and will be lost when this page closes."
+        >
+          Session only
+        </span>
+      ) : null}
       <div className="absolute right-2 bottom-2 flex gap-1">
         {onUseAsReference ? (
           <button

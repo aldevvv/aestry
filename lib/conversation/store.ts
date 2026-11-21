@@ -267,14 +267,21 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       }),
 
     deleteConversation: async (id) => {
-      get().forgetConversation(id)
+      // Persistence first, memory second: deletion success must mean the
+      // persistent operation actually succeeded. On failure the conversation
+      // stays in memory and Recent — no ghosts that reappear after refresh.
       try {
         await deleteConversationRecord(id)
-      } catch {
+      } catch (error) {
         useConversations.setState({
-          storageWarning: "The conversation could not be deleted from storage.",
+          storageWarning:
+            "The conversation could not be deleted from storage. It remains in your list — try again.",
         })
+        throw error instanceof Error
+          ? error
+          : new Error("The conversation could not be deleted from storage.")
       }
+      get().forgetConversation(id)
       void get().refreshSummaryList()
     },
 

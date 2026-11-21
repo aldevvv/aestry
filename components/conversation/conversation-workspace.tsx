@@ -669,7 +669,9 @@ export function ConversationWorkspace({
             const blob = new Blob([bytes], { type: item.mimeType })
             // The image is only reported as durably stored once the atomic
             // blob + asset write succeeds; a failure keeps it viewable for
-            // this session and surfaces a storage warning instead.
+            // this session, marks it session-only, and surfaces a storage
+            // warning instead.
+            let persistence: "persisted" | "session-only" = "persisted"
             try {
               await saveGeneratedAsset({
                 id: imageId,
@@ -681,6 +683,7 @@ export function ConversationWorkspace({
                 blob,
               })
             } catch (storageError) {
+              persistence = "session-only"
               storageFailures += 1
               const quota =
                 storageError instanceof Error &&
@@ -699,6 +702,7 @@ export function ConversationWorkspace({
                 status: "done",
                 imageId,
                 mimeType: item.mimeType,
+                persistence,
               })
           } else {
             const message =
@@ -797,6 +801,7 @@ export function ConversationWorkspace({
           const binary = atob(first.data)
           const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
           const blob = new Blob([bytes], { type: first.mimeType })
+          let persistence: "persisted" | "session-only" = "persisted"
           try {
             await saveGeneratedAsset({
               id: imageId,
@@ -808,6 +813,7 @@ export function ConversationWorkspace({
               blob,
             })
           } catch {
+            persistence = "session-only"
             toast.error("The image could not be saved to browser storage.")
           }
           cacheImageUrl(imageId, URL.createObjectURL(blob))
@@ -817,6 +823,7 @@ export function ConversationWorkspace({
               status: "done",
               imageId,
               mimeType: first.mimeType,
+              persistence,
             })
           toast.success("Image regenerated")
         } else {

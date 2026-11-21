@@ -259,7 +259,16 @@ function RecentRowMenu({
 
   const handleDelete = async () => {
     const wasActive = useConversations.getState().activeId === conversationId
-    await useConversations.getState().deleteConversation(conversationId)
+    try {
+      await useConversations.getState().deleteConversation(conversationId)
+    } catch {
+      // Persistence failed: the conversation remains in the list. Success
+      // is never reported for a deletion that did not stick.
+      toast.error(
+        "The conversation could not be deleted from storage. It remains in your list — try again."
+      )
+      return
+    }
     toast.success("Conversation deleted")
     if (wasActive) {
       useConversations.getState().setActive(null)

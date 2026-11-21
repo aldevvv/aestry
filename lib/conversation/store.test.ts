@@ -29,6 +29,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.doUnmock("./persistence")
   vi.resetModules()
 })
 
@@ -103,5 +104,53 @@ describe("recent list synchronization", () => {
     await useConversations.getState().deleteConversation(conversation.id)
     const list = useConversations.getState().summaryList
     expect(list?.some((summary) => summary.id === conversation.id)).toBe(false)
+  })
+})
+
+describe("deletion semantics", () => {
+  it("reports failure and keeps the conversation when persistence fails", async () => {
+    // Inject a failing delete while keeping every other persistence
+    // function real, so the store's failure contract is exercised exactly.
+    const real = await vi.importActual<typeof import("./persistence")>(
+      "./persistence"
+    )
+    vi.doMock("./persistence", () => ({
+      ...real,
+      deleteConversationRecord: async () => {
+        throw new Error("simulated storage failure")
+      },
+    }))
+    const { useConversations } = await freshStore()
+    const conversation = useConversations.getState().createConversation("logo")
+    useConversations
+      .getState()
+      .appendMessage(conversation.id, userMessage("keep me"))
+
+    await expect(
+      useConversations.getState().deleteConversation(conversation.id)
+    ).rejects.toThrow("simulated storage failure")
+
+    // No ghosts, no premature removal: the conversation is intact in
+    // memory and still listed in Recent.
+    expect(
+      useConversations.getState().conversations[conversation.id]
+    ).toBeDefined()
+    const list = await useConversations
+      .getState()
+      .refreshSummaryList()
+      .then(() => useConversations.getState().summaryList)
+    expect(list?.some((summary) => summary.id === conversation.id)).toBe(true)
+    expect(
+      useConversations.getState().conversations[conversation.id]?.messages
+    ).toHaveLength(1)
+  })
+
+  it("forgets the conversation only after persistence succeeds", async () => {
+    const { useConversations } = await freshStore()
+    const conversation = useConversations.getState().createConversation("logo")
+    await useConversations.getState().deleteConversation(conversation.id)
+    expect(
+      useConversations.getState().conversations[conversation.id]
+    ).toBeUndefined()
   })
 })
