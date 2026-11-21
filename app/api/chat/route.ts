@@ -22,15 +22,18 @@ import {
   streamOpenAiCompatibleConsult,
 } from "@/lib/providers/openai-compatible"
 import { ProviderRequestError } from "@/lib/providers/types"
+import { requireAccess } from "@/lib/server/access"
+import { readJsonBody, releaseSlot, tryAcquireSlot } from "@/lib/server/limits"
 
 /**
- * POST /api/chat — multimodal consultation through the user's configured
- * provider. Consultation streams over SSE by default (native Gemini
- * streamGenerateContent / OpenAI-compatible chat completions); compaction
- * runs as a single JSON round-trip. The key travels browser -> this
- * self-hosted server -> provider exactly once and is never logged or
- * persisted.
+ * POST /api/chat — multimodal consultation through the configured provider.
+ * Consultation streams over SSE by default; compaction runs as a single
+ * JSON round-trip. The endpoint is operator-access gated and concurrency
+ * bounded, because it triggers billable provider inference.
  */
+
+const MAX_BODY_BYTES = 48 * 1024 * 1024
+const MAX_CONCURRENT_PROVIDER_OPS = 4
 
 function errorStatus(error: unknown): { status: number; message: string } {
   if (error instanceof ProviderRequestError) {
@@ -86,6 +89,10 @@ function buildConsultStream(input: ChatRequestBody): ReadableStream<Uint8Array> 
       } catch (error) {
         const mapped = errorStatus(error)
         send({ type: "error", error: mapped.message, status: mapped.status })
+      } finally {
+        // The concurrency slot is held for the whole stream, not just the
+        // moment the response headers are sent.
+        releaseSlot("provider-ops")
       }
       controller.enqueue(encoder.encode("data: [DONE]\n\n"))
       controller.close()
@@ -94,8 +101,14 @@ function buildConsultStream(input: ChatRequestBody): ReadableStream<Uint8Array> 
 }
 
 export async function POST(request: Request): Promise<NextResponse | Response> {
-  const body: unknown = await request.json().catch(() => null)
-  const parsed = chatRequestSchema.safeParse(body)
+  const denial = requireAccess(request)
+  if (denial) return denial
+
+  const body = await readJsonBody(request, MAX_BODY_BYTES)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsed = chatRequestSchema.safeParse(body.data)
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid consultation request." }, { status: 400 })
   }
@@ -113,27 +126,35 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
     stream,
   } = parsed.data
 
-  // Compaction is a single JSON round-trip; consultation streams.
-  if (mode === "consult" && stream) {
-    return new Response(buildConsultStream(parsed.data), {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    })
+  if (!tryAcquireSlot("provider-ops", MAX_CONCURRENT_PROVIDER_OPS)) {
+    return NextResponse.json(
+      { error: "The server is busy with existing provider requests. Try again shortly." },
+      { status: 503 }
+    )
   }
 
-  const systemPrompt =
-    mode === "compact"
-      ? buildCompactionSystemPrompt()
-      : buildConsultationSystemPrompt(
-          skillId,
-          brief ?? null,
-          projectContext
-        )
-
   try {
+    // Compaction is a single JSON round-trip; consultation streams.
+    if (mode === "consult" && stream) {
+      // The stream owns the concurrency slot and releases it on completion.
+      return new Response(buildConsultStream(parsed.data), {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        },
+      })
+    }
+
+    const systemPrompt =
+      mode === "compact"
+        ? buildCompactionSystemPrompt()
+        : buildConsultationSystemPrompt(
+            skillId,
+            brief ?? null,
+            projectContext
+          )
+
     const adapterPayload = {
       apiKey,
       model,
@@ -175,5 +196,7 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
   } catch (error) {
     const mapped = errorStatus(error)
     return NextResponse.json({ error: mapped.message }, { status: mapped.status })
+  } finally {
+    releaseSlot("provider-ops")
   }
 }

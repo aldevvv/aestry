@@ -1,6 +1,7 @@
 import { classifyProviderModel } from "./models"
 import { createUpstreamSseParser } from "@/lib/server/sse"
 import { logProvider } from "@/lib/server/logs"
+import { safeFetch } from "@/lib/server/outbound"
 import {
   type DiscoveredModel,
   ProviderRequestError,
@@ -247,7 +248,7 @@ export async function generateImagesGoogle(payload: {
   })
 
   const calls = Array.from({ length: payload.count }, () =>
-    fetch(
+    safeFetch(
       `${GOOGLE_BASE_URL}/models/${encodeURIComponent(payload.model)}:generateContent`,
       {
         method: "POST",
@@ -256,7 +257,7 @@ export async function generateImagesGoogle(payload: {
           "x-goog-api-key": payload.apiKey,
         },
         body,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        timeoutMs: REQUEST_TIMEOUT_MS,
       }
     )
   )
@@ -384,7 +385,7 @@ export async function streamGoogleConsult(
     }
   }
 
-  const response = await fetch(
+  const response = await safeFetch(
     `${GOOGLE_BASE_URL}/models/${encodeURIComponent(payload.model)}:streamGenerateContent?alt=sse`,
     {
       method: "POST",
@@ -398,7 +399,7 @@ export async function streamGoogleConsult(
         // No responseMimeType here: some current models reject JSON mode in
         // streaming, and the reply parser handles fenced/plain JSON anyway.
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      timeoutMs: REQUEST_TIMEOUT_MS,
     }
   )
   logProvider({
@@ -507,7 +508,7 @@ export async function streamGoogleConsult(
   if (!text.trim()) {
     throw new ProviderRequestError(
       502,
-      `The model returned no text${finishReason ? ` (finishReason: ${finishReason})` : ""}. Raw SSE:\n${rawExcerpt.slice(0, 600)}`
+      `The model returned no text${finishReason ? ` (finishReason: ${finishReason})` : ""}.`
     )
   }
   return { text, structured: true, usage: { promptTokens: capturedPromptTokens } }

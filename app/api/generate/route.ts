@@ -6,10 +6,16 @@ import { generateImagesGoogle } from "@/lib/providers/google"
 import { generateImagesOpenAiCompatible } from "@/lib/providers/openai-compatible"
 import { ProviderRequestError } from "@/lib/providers/types"
 import type { GenerationApiResponse } from "@/lib/generation"
+import { requireAccess } from "@/lib/server/access"
+import { readJsonBody, withSlot } from "@/lib/server/limits"
 
 // POST /api/generate — the server compiles the generation prompt from the
 // validated skill + design brief. Caller-supplied compiled prompts are not
-// trusted: skill constraints are enforced here, server-side.
+// trusted: skill constraints are enforced here, server-side. Operator-access
+// gated and concurrency bounded: every call is billable inference.
+
+const MAX_BODY_BYTES = 32 * 1024 * 1024
+const MAX_CONCURRENT_GENERATIONS = 2
 
 const referenceImageSchema = z.object({
   mimeType: z.string().regex(/^image\//),
@@ -52,8 +58,14 @@ const bodySchema = z.object({
 })
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body: unknown = await request.json().catch(() => null)
-  const parsed = bodySchema.safeParse(body)
+  const denial = requireAccess(request)
+  if (denial) return denial
+
+  const body = await readJsonBody(request, MAX_BODY_BYTES)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsed = bodySchema.safeParse(body.data)
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid generation request." },
@@ -73,56 +85,66 @@ export async function POST(request: Request): Promise<NextResponse> {
     )
   }
 
-  try {
-    let results
-    let warning: string | undefined
-    if (kind === "google") {
-      results = await generateImagesGoogle({
-        apiKey,
-        model,
-        prompt,
-        count,
-        referenceImages,
-      })
-    } else {
-      results = await generateImagesOpenAiCompatible({
-        apiKey,
-        model,
-        baseUrl,
-        prompt,
-        count,
-        size,
-      })
-      // The OpenAI-compatible images endpoint accepts text-only prompts;
-      // never pretend references influenced the result.
-      if (referenceImages && referenceImages.length > 0) {
-        warning =
-          "Reference images were not sent: this provider path (images/generations) does not accept image input."
+  const result = await withSlot("generation", MAX_CONCURRENT_GENERATIONS, async () => {
+    try {
+      let results
+      let warning: string | undefined
+      if (kind === "google") {
+        results = await generateImagesGoogle({
+          apiKey,
+          model,
+          prompt,
+          count,
+          referenceImages,
+        })
+      } else {
+        results = await generateImagesOpenAiCompatible({
+          apiKey,
+          model,
+          baseUrl,
+          prompt,
+          count,
+          size,
+        })
+        // The OpenAI-compatible images endpoint accepts text-only prompts;
+        // never pretend references influenced the result.
+        if (referenceImages && referenceImages.length > 0) {
+          warning =
+            "Reference images were not sent: this provider path (images/generations) does not accept image input."
+        }
       }
-    }
 
-    const payload: GenerationApiResponse & { prompt: string } = {
-      results,
-      prompt,
-      ...(warning ? { warning } : {}),
-    }
-    return NextResponse.json(payload)
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
+      const payload: GenerationApiResponse & { prompt: string } = {
+        results,
+        prompt,
+        ...(warning ? { warning } : {}),
+      }
+      return NextResponse.json(payload)
+    } catch (error) {
+      if (error instanceof ProviderRequestError) {
+        return NextResponse.json(
+          { error: error.message },
+          { status: error.status >= 400 && error.status < 500 ? error.status : 502 }
+        )
+      }
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        return NextResponse.json(
+          { error: "The provider took too long to respond." },
+          { status: 504 }
+        )
+      }
       return NextResponse.json(
-        { error: error.message },
-        { status: error.status >= 400 && error.status < 500 ? error.status : 502 }
+        { error: "Could not reach the provider endpoint." },
+        { status: 502 }
       )
     }
-    if (error instanceof DOMException && error.name === "TimeoutError") {
-      return NextResponse.json(
-        { error: "The provider took too long to respond." },
-        { status: 504 }
-      )
-    }
-    return NextResponse.json(
-      { error: "Could not reach the provider endpoint." },
-      { status: 502 }
+  })
+
+  return (
+    result ??
+    NextResponse.json(
+      { error: "A generation is already running — wait for it to finish." },
+      { status: 503 }
     )
-  }
+  )
 }

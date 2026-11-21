@@ -2,6 +2,7 @@ import type { Metadata } from "next"
 import Link from "next/link"
 import { HardDriveIcon, KeyRoundIcon } from "lucide-react"
 
+import { AccessLogin } from "@/components/access-login"
 import { AppearanceSelector } from "@/components/appearance-selector"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -68,6 +69,13 @@ export default function SettingsPage() {
         description="Choose how Aestry looks on this device. System follows your operating system preference."
       >
         <AppearanceSelector />
+      </SettingsSection>
+      <Separator />
+      <SettingsSection
+        title="Server access"
+        description="When AESTRY_ACCESS_SECRET is set on the server, provider operations require operator sign-in on this browser."
+      >
+        <AccessLogin />
       </SettingsSection>
       <Separator />
       <SettingsSection

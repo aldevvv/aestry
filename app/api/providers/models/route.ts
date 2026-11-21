@@ -4,11 +4,13 @@ import { z } from "zod"
 import { listGoogleModels } from "@/lib/providers/google"
 import { listOpenAiCompatibleModels } from "@/lib/providers/openai-compatible"
 import { ProviderRequestError } from "@/lib/providers/types"
+import { requireAccess } from "@/lib/server/access"
+import { readJsonBody } from "@/lib/server/limits"
 
 // Same-origin proxy for provider model discovery. The API key travels from
 // the user's browser to their own self-hosted Aestry server and is used
 // exactly once, against the endpoint it belongs to. Keys are never logged
-// or forwarded anywhere else.
+// or forwarded anywhere else. Operator-access gated.
 
 const bodySchema = z.object({
   kind: z.enum(["google", "openai-compatible"]),
@@ -17,8 +19,14 @@ const bodySchema = z.object({
 })
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body: unknown = await request.json().catch(() => null)
-  const parsed = bodySchema.safeParse(body)
+  const denial = requireAccess(request)
+  if (denial) return denial
+
+  const body = await readJsonBody(request, 1024 * 1024)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsed = bodySchema.safeParse(body.data)
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 })
   }

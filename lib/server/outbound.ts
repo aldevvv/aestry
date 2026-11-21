@@ -105,6 +105,15 @@ export function validateOutboundUrl(raw: string): URL {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
+/** Headers that must never follow a redirect across origins. */
+const CREDENTIAL_HEADERS = [
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "api-key",
+  "x-goog-api-key",
+]
+
 export type SafeFetchOptions = RequestInit & {
   maxRedirects?: number
   timeoutMs?: number
@@ -114,20 +123,23 @@ export type SafeFetchOptions = RequestInit & {
  * fetch() with the outbound policy enforced on every redirect hop. Redirect
  * responses are followed manually (up to maxRedirects) so each destination
  * is re-validated — a redirect must not smuggle a request to an internal
- * address. Cross-origin forwarding is limited to the redirect target itself;
- * credentials never travel beyond the configured endpoint.
+ * address. Credential headers are stripped as soon as a redirect leaves the
+ * original origin: a same-origin hop keeps authentication, a cross-origin
+ * hop never inherits it.
  */
 export async function safeFetch(
   rawUrl: string,
   options: SafeFetchOptions = {}
 ): Promise<Response> {
   const { maxRedirects = 3, timeoutMs = 30_000, ...init } = options
+  const originalOrigin = validateOutboundUrl(rawUrl).origin
+  const headers = new Headers(init.headers)
+  const baseInit: RequestInit = { ...init, headers }
   let currentUrl = validateOutboundUrl(rawUrl)
-  let currentInit: RequestInit = { ...init }
 
   for (let hop = 0; ; hop += 1) {
     const response = await fetch(currentUrl, {
-      ...currentInit,
+      ...baseInit,
       redirect: "manual",
       signal: init.signal ?? AbortSignal.timeout(timeoutMs),
     })
@@ -136,13 +148,47 @@ export async function safeFetch(
     }
     const location = response.headers.get("location")
     if (!location) return response
-    const nextUrl = new URL(location, currentUrl)
-    currentUrl = validateOutboundUrl(nextUrl.toString())
+    const nextUrl = validateOutboundUrl(new URL(location, currentUrl).toString())
+    if (nextUrl.origin !== originalOrigin) {
+      for (const header of CREDENTIAL_HEADERS) {
+        headers.delete(header)
+      }
+    }
+    currentUrl = nextUrl
     if (response.status !== 307 && response.status !== 308) {
       // 301/302/303 downgrade to GET without a body.
-      currentInit = { ...currentInit, method: "GET", body: undefined }
+      baseInit.method = "GET"
+      baseInit.body = undefined
     }
   }
+}
+
+/**
+ * Reads a response body with a hard byte cap enforced while streaming.
+ * Returns null when the body exceeds maxBytes — oversized untrusted bodies
+ * must never be fully buffered just to measure them.
+ */
+export async function readBytesBounded(
+  response: Response,
+  maxBytes: number
+): Promise<Buffer | null> {
+  const reader = response.body?.getReader()
+  if (!reader) return Buffer.alloc(0)
+  const chunks: Uint8Array[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      received += value.byteLength
+      if (received > maxBytes) {
+        void reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
 }
 
 /**
@@ -170,29 +216,14 @@ export async function fetchImageBounded(
   if (declaredLength && Number(declaredLength) > maxBytes) {
     throw new OutboundUrlError("The generated image is too large to download.")
   }
-  const reader = response.body?.getReader()
-  if (!reader) {
-    throw new OutboundUrlError("The image response has no body.")
-  }
-  const chunks: Uint8Array[] = []
-  let received = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    if (value) {
-      received += value.byteLength
-      if (received > maxBytes) {
-        void reader.cancel()
-        throw new OutboundUrlError("The generated image is too large to download.")
-      }
-      chunks.push(value)
-    }
+  const bytes = await readBytesBounded(response, maxBytes)
+  if (bytes === null) {
+    throw new OutboundUrlError("The generated image is too large to download.")
   }
   const mimeType = contentType.startsWith("image/")
     ? contentType.split(";")[0].trim()
     : "image/png"
-  const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
-  return { mimeType, base64: buffer.toString("base64") }
+  return { mimeType, base64: bytes.toString("base64") }
 }
 
 export type SafeFetchJsonSuccess<T> = { ok: true; data: T; response: Response }
@@ -216,12 +247,12 @@ export async function safeFetchJson<T>(
   if (declaredLength && Number(declaredLength) > maxBytes) {
     return { ok: false, response }
   }
-  const text = await response.text()
-  if (text.length > maxBytes) {
+  const bytes = await readBytesBounded(response, maxBytes)
+  if (bytes === null) {
     return { ok: false, response }
   }
   try {
-    return { ok: true, data: JSON.parse(text) as T, response }
+    return { ok: true, data: JSON.parse(bytes.toString("utf8")) as T, response }
   } catch {
     return { ok: false, response }
   }

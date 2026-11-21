@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { TerminalIcon } from "lucide-react"
 
+import { AccessLogin } from "@/components/access-login"
 import { TerminalView } from "@/components/terminal-view"
 
 export const metadata: Metadata = {
@@ -15,11 +16,12 @@ export default function TerminalPage() {
           Terminal
         </h1>
         <p className="text-sm text-muted-foreground">
-          Raw events from every provider operation — requests, responses,
-          streaming excerpts, successes and failures. Keys are redacted at the
-          source.
+          Structured provider diagnostics — operations, models, statuses,
+          durations, token usage, and error categories. Raw excerpts appear
+          only when the operator enables AESTRY_ENABLE_DIAGNOSTICS.
         </p>
       </div>
+      <AccessLogin />
       <div className="flex items-start gap-3 rounded-xl border border-dashed border-border p-3">
         <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
           <TerminalIcon />

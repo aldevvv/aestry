@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 
 import { ProviderRequestError } from "@/lib/providers/types"
+import { requireAccess } from "@/lib/server/access"
+import { readJsonBody } from "@/lib/server/limits"
 import { safeFetchJson } from "@/lib/server/outbound"
 
 /**
@@ -26,8 +28,14 @@ function repoSlug(url: string): { owner: string; repo: string } | null {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const body: unknown = await request.json().catch(() => null)
-  const parsed = bodySchema.safeParse(body)
+  const denial = requireAccess(request)
+  if (denial) return denial
+
+  const body = await readJsonBody(request, 4_096)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsed = bodySchema.safeParse(body.data)
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 })
   }

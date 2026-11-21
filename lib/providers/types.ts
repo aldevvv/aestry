@@ -1,4 +1,5 @@
 import type { ModelCapability, ProviderModel } from "./models"
+import { readBytesBounded } from "@/lib/server/outbound"
 
 export type ProviderKind = "google" | "openai-compatible"
 
@@ -34,7 +35,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Maps an upstream non-2xx response to a ProviderRequestError with a
- * user-safe message. Credential values are never included.
+ * user-safe message. The error body is read with a size bound; credential
+ * values are never included and upstream detail is bounded.
  */
 export async function providerErrorFromResponse(
   response: Response,
@@ -42,14 +44,20 @@ export async function providerErrorFromResponse(
 ): Promise<ProviderRequestError> {
   let detail: string | undefined
   try {
-    const body: unknown = await response.json()
-    if (isRecord(body) && isRecord(body.error)) {
-      if (typeof body.error.message === "string") detail = body.error.message
-    } else if (isRecord(body) && typeof body.message === "string") {
-      detail = body.message
+    const bytes = await readBytesBounded(response, 256 * 1024)
+    if (bytes !== null) {
+      const body: unknown = JSON.parse(bytes.toString("utf8"))
+      if (isRecord(body) && isRecord(body.error)) {
+        if (typeof body.error.message === "string") detail = body.error.message
+      } else if (isRecord(body) && typeof body.message === "string") {
+        detail = body.message
+      }
     }
   } catch {
     // Non-JSON error body.
+  }
+  if (detail && detail.length > 500) {
+    detail = `${detail.slice(0, 500)}…`
   }
   if (response.status === 401 || response.status === 403) {
     return new ProviderRequestError(401, detail ?? "The API key was rejected by the provider.")

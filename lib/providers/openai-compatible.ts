@@ -1,6 +1,6 @@
-import { fetchImageBounded } from "@/lib/server/outbound"
+import { fetchImageBounded, safeFetch } from "@/lib/server/outbound"
 import { createUpstreamSseParser } from "@/lib/server/sse"
-import { logProvider } from "@/lib/server/logs"
+import { logDiagnostic } from "@/lib/server/logs"
 
 import { inferCapabilities } from "./models"
 import {
@@ -15,9 +15,11 @@ const REQUEST_TIMEOUT_MS = 120_000
 
 /**
  * OpenAI-compatible provider adapters. The base URL is user-configured, so
- * every request goes through the server-side outbound policy (protocol,
- * private-address, and redirect validation). Endpoint compatibility varies:
- * model discovery and chat are treated as best-effort with explicit errors.
+ * every request — listing, chat, streaming, and image generation alike —
+ * goes through the server-side outbound policy (protocol, private-address,
+ * and redirect validation with credential stripping). Endpoint
+ * compatibility varies: model discovery and chat are treated as
+ * best-effort with explicit errors.
  */
 
 function apiRoot(baseUrl: string | undefined): URL {
@@ -40,11 +42,27 @@ function endpointUrl(root: URL, path: string, search = ""): string {
   return `${root.origin}${root.pathname.replace(/\/+$/, "")}${path}${search}`
 }
 
+// Local import keeps classification next to its consumer; models.ts stays
+// free of adapter concerns.
+import { classifyProviderModel } from "./models"
+
+function inferOpenAiCapability(id: string): DiscoveredModel["capability"] | null {
+  return classifyProviderModel("openai-compatible", id)
+}
+
 export async function listOpenAiCompatibleModels(
   apiKey: string,
   baseUrl: string | undefined
 ): Promise<DiscoveredModel[]> {
   const root = apiRoot(baseUrl)
+  const requestId = crypto.randomUUID()
+  const startedAt = Date.now()
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "models.list",
+    requestId,
+    message: "listing models",
+  })
   const result = await safeFetchJson<{ data?: unknown }>(
     endpointUrl(root, "/models"),
     {
@@ -53,6 +71,16 @@ export async function listOpenAiCompatibleModels(
     }
   )
   if (!result.ok) {
+    logDiagnostic({
+      provider: "openai-compatible",
+      operation: "models.list",
+      requestId,
+      level: "error",
+      status: result.response.status,
+      durationMs: Date.now() - startedAt,
+      message: "model listing failed",
+      errorCategory: "upstream",
+    })
     throw await providerErrorFromResponse(result.response, "Model discovery failed")
   }
   const data = result.data
@@ -78,17 +106,26 @@ export async function listOpenAiCompatibleModels(
     }
   }
   if (models.length === 0) {
+    logDiagnostic({
+      provider: "openai-compatible",
+      operation: "models.list",
+      requestId,
+      level: "error",
+      durationMs: Date.now() - startedAt,
+      message: "no usable models for this key",
+      errorCategory: "empty_response",
+    })
     throw new ProviderRequestError(502, "The endpoint returned no usable models.")
   }
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "models.list",
+    requestId,
+    durationMs: Date.now() - startedAt,
+    eventCount: models.length,
+    message: `listed ${models.length.toString()} models`,
+  })
   return models
-}
-
-// Local import keeps classification next to its consumer; models.ts stays
-// free of adapter concerns.
-import { classifyProviderModel } from "./models"
-
-function inferOpenAiCapability(id: string): DiscoveredModel["capability"] | null {
-  return classifyProviderModel("openai-compatible", id)
 }
 
 export async function consultOpenAiCompatible(payload: {
@@ -151,6 +188,17 @@ export async function consultOpenAiCompatible(payload: {
     body.response_format = { type: "json_object" }
   }
 
+  const requestId = crypto.randomUUID()
+  const startedAt = Date.now()
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "chat.generate",
+    requestId,
+    model: payload.model,
+    message: "consultation started",
+    detail: `turns: ${payload.turns.length.toString()} · images: ${(payload.referenceImages?.length ?? 0).toString()}`,
+  })
+
   const result = await safeFetchJson<{
     choices?: unknown
     usage?: unknown
@@ -167,6 +215,22 @@ export async function consultOpenAiCompatible(payload: {
     }
   )
   if (!result.ok) {
+    logDiagnostic({
+      provider: "openai-compatible",
+      operation: "chat.generate",
+      requestId,
+      model: payload.model,
+      level: "error",
+      status: result.response.status,
+      durationMs: Date.now() - startedAt,
+      message: "consultation failed",
+      errorCategory:
+        result.response.status === 401 || result.response.status === 403
+          ? "auth"
+          : result.response.status === 429
+            ? "rate_limited"
+            : "upstream",
+    })
     throw await providerErrorFromResponse(result.response, "Consultation failed")
   }
   const data = result.data
@@ -178,6 +242,16 @@ export async function consultOpenAiCompatible(payload: {
   const text =
     message && typeof message.content === "string" ? message.content : undefined
   if (!text || !text.trim()) {
+    logDiagnostic({
+      provider: "openai-compatible",
+      operation: "chat.generate",
+      requestId,
+      model: payload.model,
+      level: "error",
+      durationMs: Date.now() - startedAt,
+      message: "no text in response",
+      errorCategory: "empty_response",
+    })
     throw new ProviderRequestError(502, "The model returned an empty response.")
   }
   const usage = isRecord(data) && isRecord(data.usage) ? data.usage : null
@@ -185,6 +259,19 @@ export async function consultOpenAiCompatible(payload: {
     usage && typeof usage.prompt_tokens === "number"
       ? usage.prompt_tokens
       : undefined
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "chat.generate",
+    requestId,
+    model: payload.model,
+    durationMs: Date.now() - startedAt,
+    usage: promptTokens === undefined ? undefined : { promptTokens },
+    finishReason:
+      choice && typeof choice.finish_reason === "string"
+        ? choice.finish_reason
+        : undefined,
+    message: `consultation ok · ${text.length.toString()} chars`,
+  })
   return {
     text: text.trim(),
     structured: capabilities.structuredJson,
@@ -204,7 +291,17 @@ export async function generateImagesOpenAiCompatible(payload: {
   Array<{ ok: true; mimeType: string; data: string } | { ok: false; error: string }>
 > {
   const root = apiRoot(payload.baseUrl)
-  const response = await fetch(endpointUrl(root, "/images/generations"), {
+  const requestId = crypto.randomUUID()
+  const startedAt = Date.now()
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "images.generate",
+    requestId,
+    model: payload.model,
+    message: `generation started · count ${payload.count.toString()}`,
+  })
+
+  const response = await safeFetch(endpointUrl(root, "/images/generations"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -217,13 +314,37 @@ export async function generateImagesOpenAiCompatible(payload: {
       response_format: "b64_json",
       ...(payload.size ? { size: payload.size } : {}),
     }),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    timeoutMs: REQUEST_TIMEOUT_MS,
   })
   if (!response.ok) {
+    logDiagnostic({
+      provider: "openai-compatible",
+      operation: "images.generate",
+      requestId,
+      model: payload.model,
+      level: "error",
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      message: "generation failed",
+      errorCategory:
+        response.status === 401 || response.status === 403
+          ? "auth"
+          : response.status === 429
+            ? "rate_limited"
+            : "upstream",
+    })
     throw await providerErrorFromResponse(response, "Image generation failed")
   }
 
-  const data: unknown = await response.json().catch(() => null)
+  const bytes = await readResponseBounded(response, 64 * 1024 * 1024)
+  let data: unknown = null
+  if (bytes !== null) {
+    try {
+      data = JSON.parse(bytes.toString("utf8")) as unknown
+    } catch {
+      data = null
+    }
+  }
   const rawImages = Array.isArray(data)
     ? data
     : isRecord(data) && Array.isArray(data.data)
@@ -256,10 +377,45 @@ export async function generateImagesOpenAiCompatible(payload: {
       }
     }
   }
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "images.generate",
+    requestId,
+    model: payload.model,
+    level: results.some((result) => result.ok) ? "info" : "warn",
+    durationMs: Date.now() - startedAt,
+    eventCount: results.length,
+    message: `generation finished · ${results.filter((result) => result.ok).length.toString()}/${payload.count.toString()} ok`,
+    errorCategory: results.length === 0 ? "empty_response" : undefined,
+  })
   if (results.length === 0) {
     return [{ ok: false, error: "The endpoint returned no images." }]
   }
   return results
+}
+
+/** Bounded body read for adapter responses (oversized bodies are rejected). */
+async function readResponseBounded(
+  response: Response,
+  maxBytes: number
+): Promise<Buffer | null> {
+  const reader = response.body?.getReader()
+  if (!reader) return Buffer.alloc(0)
+  const chunks: Uint8Array[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      received += value.byteLength
+      if (received > maxBytes) {
+        void reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)))
 }
 
 export async function streamOpenAiCompatibleConsult(
@@ -316,31 +472,34 @@ export async function streamOpenAiCompatibleConsult(
     body.response_format = { type: "json_object" }
   }
 
-  logProvider({
-    scope: "openai.chat.stream",
-    message: `POST /chat/completions (stream) · model ${payload.model}`,
-    detail: JSON.stringify({
-      model: payload.model,
-      turns: payload.turns,
-      systemPromptChars: payload.systemPrompt.length,
-      vision: capabilities.vision,
-    }),
-    secret: payload.apiKey,
+  const requestId = crypto.randomUUID()
+  const startedAt = Date.now()
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "chat.stream",
+    requestId,
+    model: payload.model,
+    message: "streaming consultation started",
+    detail: `turns: ${payload.turns.length.toString()} · images: ${(payload.referenceImages?.length ?? 0).toString()}`,
   })
 
-  const response = await fetch(endpointUrl(root, "/chat/completions"), {
+  const response = await safeFetch(endpointUrl(root, "/chat/completions"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${payload.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    timeoutMs: REQUEST_TIMEOUT_MS,
   })
-  logProvider({
-    scope: "openai.chat.stream",
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "chat.stream",
+    requestId,
+    model: payload.model,
     level: response.ok ? "info" : "error",
-    message: `upstream responded ${response.status}`,
+    status: response.status,
+    message: `upstream responded ${response.status.toString()}`,
   })
   if (!response.ok) {
     throw await providerErrorFromResponse(response, "Consultation failed")
@@ -352,10 +511,12 @@ export async function streamOpenAiCompatibleConsult(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let text = ""
+  let eventCount = 0
   let streamError: string | undefined
   const rawSseLines: string[] = []
   let rawSseTruncated = false
   const parser = createUpstreamSseParser((data) => {
+    eventCount += 1
     if (rawSseLines.length < 16) {
       rawSseLines.push(data.length > 300 ? `${data.slice(0, 300)}…` : data)
     } else if (!rawSseTruncated) {
@@ -394,12 +555,22 @@ export async function streamOpenAiCompatibleConsult(
     if (done) break
     parser.push(decoder.decode(value, { stream: true }))
   }
-  const rawExcerpt = `${rawSseLines.join("\n")}${rawSseTruncated ? "\n… more events omitted …" : ""}`
-  logProvider({
-    scope: "openai.chat.stream",
+  const excerpt = `${rawSseLines.join("\n")}${rawSseTruncated ? "\n… more events omitted …" : ""}`
+  logDiagnostic({
+    provider: "openai-compatible",
+    operation: "chat.stream",
+    requestId,
+    model: payload.model,
     level: streamError || !text.trim() ? "error" : "info",
+    durationMs: Date.now() - startedAt,
+    eventCount,
     message: `stream finished · ${text.length.toString()} chars`,
-    detail: rawExcerpt,
+    errorCategory: streamError
+      ? "upstream"
+      : !text.trim()
+        ? "empty_response"
+        : undefined,
+    excerpt,
     secret: payload.apiKey,
   })
   if (streamError) {

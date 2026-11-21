@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   fetchImageBounded,
   OutboundUrlError,
+  safeFetch,
+  safeFetchJson,
   validateOutboundUrl,
 } from "./outbound"
 
@@ -112,5 +114,135 @@ describe("fetchImageBounded", () => {
       fetchImageBounded("https://cdn.example.com/redirect.png")
     ).rejects.toThrow(OutboundUrlError)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("safeFetch redirect credential safety", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("keeps credentials on a same-origin redirect", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: url.toString(), init })
+        if (calls.length === 1) {
+          return new Response(null, {
+            status: 307,
+            headers: { Location: "https://api.example.com/v1/renamed" },
+          })
+        }
+        return new Response("{}")
+      })
+    )
+    const response = await safeFetch("https://api.example.com/v1/models", {
+      headers: { Authorization: "Bearer sk-test" },
+    })
+    expect(response.ok).toBe(true)
+    expect(calls.length).toBe(2)
+    const forwarded = new Headers(calls[1].init?.headers)
+    expect(forwarded.get("authorization")).toBe("Bearer sk-test")
+  })
+
+  it("strips credential headers on a cross-origin redirect", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: url.toString(), init })
+        if (calls.length === 1) {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "https://cdn.other.example/download" },
+          })
+        }
+        return new Response("{}")
+      })
+    )
+    const response = await safeFetch("https://api.example.com/v1/files", {
+      headers: {
+        Authorization: "Bearer sk-test",
+        "x-goog-api-key": "AIza-secret",
+        Cookie: "session=abc",
+      },
+    })
+    expect(response.ok).toBe(true)
+    expect(calls.length).toBe(2)
+    expect(calls[1].url).toBe("https://cdn.other.example/download")
+    const forwarded = new Headers(calls[1].init?.headers)
+    expect(forwarded.get("authorization")).toBeNull()
+    expect(forwarded.get("x-goog-api-key")).toBeNull()
+    expect(forwarded.get("cookie")).toBeNull()
+  })
+
+  it("downgrades 303 redirects to body-less GETs", async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, init?: RequestInit) => {
+        calls.push({ url: url.toString(), init })
+        if (calls.length === 1) {
+          return new Response(null, {
+            status: 303,
+            headers: { Location: "https://api.example.com/v1/other" },
+          })
+        }
+        return new Response("{}")
+      })
+    )
+    await safeFetch("https://api.example.com/v1/chat", {
+      method: "POST",
+      headers: { Authorization: "Bearer sk-test" },
+      body: JSON.stringify({ big: "payload" }),
+    })
+    expect(calls[1].init?.method).toBe("GET")
+    expect(calls[1].init?.body).toBeUndefined()
+  })
+
+  it("still refuses restricted redirect destinations", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(null, {
+          status: 307,
+          headers: { Location: "http://127.0.0.1:6379/" },
+        })
+      )
+    )
+    await expect(
+      safeFetch("https://api.example.com/v1/models", {
+        headers: { Authorization: "Bearer sk-test" },
+      })
+    ).rejects.toThrow(OutboundUrlError)
+  })
+})
+
+describe("safeFetchJson bounded reads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("rejects oversized bodies that hide their size from content-length", async () => {
+    const big = "x".repeat(64 * 1024)
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(big, { headers: { "Content-Type": "application/json" } }))
+    )
+    const result = await safeFetchJson<unknown>("https://api.example.com/data", {
+      maxBytes: 1024,
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it("parses JSON bodies under the cap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"ok":true}'))
+    )
+    const result = await safeFetchJson<{ ok: boolean }>("https://api.example.com/data")
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.data.ok).toBe(true)
   })
 })
