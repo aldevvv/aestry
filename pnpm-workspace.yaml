@@ -1,2 +1,8 @@
 minimumReleaseAgeExclude:
   - lucide-react@1.77.0
+overrides:
+  # GHSA-g3hv-75wg-m249: minimatch ReDoS (>=7.0.0 <11.0.1). Only
+  # shadcn > ts-morph > @ts-morph/common still resolves into this range;
+  # redirect it to the patched 11.x line (same usage @ts-morph/common
+  # validates upstream in 0.29).
+  "minimatch@>=7.0.0 <11.0.1": "^11.0.1"
