@@ -5,6 +5,8 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* Compact density: every padding/gap/size utility derives from this. */
+  --spacing: 0.22rem;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
@@ -147,5 +149,7 @@
   }
   html {
     @apply font-sans;
+    /* Compact density: 1rem = 15px; all rem-based sizing scales down. */
+    font-size: 15px;
   }
 }

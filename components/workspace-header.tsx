@@ -55,7 +55,7 @@ function ThemeMenu() {
 
 function WorkspaceHeader() {
   return (
-    <header className="sticky top-0 z-20 flex h-12 shrink-0 items-center gap-1.5 border-b border-border bg-background px-3">
+    <header className="sticky top-0 z-20 flex h-10 shrink-0 items-center gap-1.5 border-b border-border bg-background px-3">
       <SidebarTrigger className="-ml-1" />
       <div className="ml-auto flex items-center">
         <ThemeMenu />
