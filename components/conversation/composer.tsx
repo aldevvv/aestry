@@ -356,8 +356,10 @@ function ContextWindowPie({
             </p>
           )}
           <p className="mt-1">
-            Measured after each consultation. The conversation auto-compacts at
-            95% to stay within the window.
+            Measured after each consultation. The conversation auto-compacts
+            when the projected context approaches the
+            model&rsquo;s window (budget: 90% of the limit minus an output
+            reserve), not at a raw percentage.
           </p>
         </div>
         {onCompact && limit ? (

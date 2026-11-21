@@ -57,14 +57,24 @@ Custom OpenAI-compatible endpoints will return as a server-configured provider; 
 
 ### Access protection (please read)
 
-Server-owned credentials mean an unprotected public deployment would let strangers spend your AI quota. Set `AESTRY_ACCESS_SECRET` in the server environment to require operator sign-in: privileged endpoints (consultation, generation, model discovery, diagnostics, project context, database status) then need a session — the browser receives only a derived, HttpOnly cookie, never the secret. Without it, Aestry runs in an explicit unprotected mode suitable for local use only: cross-site state-changing requests are rejected, and the Providers/Terminal pages tell you that protection is disabled. Diagnostics never include prompts, transcripts, or keys by default; set `AESTRY_ENABLE_DIAGNOSTICS=true` only while troubleshooting, and know that excerpts may contain conversation fragments.
+Server-owned credentials mean an unprotected public deployment would let strangers spend your AI quota. Set `AESTRY_ACCESS_SECRET` in the server environment to require operator sign-in: privileged endpoints (consultation, generation, model discovery, diagnostics, project context, database status) then need a session — the browser receives only a derived, HttpOnly cookie, never the secret.
+
+**Production builds fail closed**: without `AESTRY_ACCESS_SECRET`, privileged operations are disabled with configuration guidance rather than silently exposed. Development builds run in an explicit local-only mode (reads open, writes same-origin only); set `AESTRY_ALLOW_LOCAL_MODE=false` to fail closed outside production too. Cross-site state-changing requests are rejected in every mode. Diagnostics never include prompts, transcripts, or keys by default; set `AESTRY_ENABLE_DIAGNOSTICS=true` only while troubleshooting, and know that excerpts may contain conversation fragments.
+
+### Projects
+
+Projects group conversations and carry reusable design context: a name, an optional description, and optional standing instructions. Chats created inside a Project consult with that context (clearly labeled, non-authoritative — it never overrides security or approval boundaries), and Project chats live in their Project's list rather than global Recent. Deleting a Project never destroys anything: its conversations return to Recent with all messages, and generated assets stay in History.
+
+### Temporary Chat
+
+The header's timer icon starts a Temporary Chat: a fully in-memory conversation that never touches IndexedDB, never appears in Recent or History, and is discarded when you leave the page. You can consult, generate (with the usual explicit approval), and download images while it is active. Temporary means **Aestry** stores nothing — it is not a claim about your provider's retention policies.
 
 ### Storage
 
-- **Conversations, messages, design briefs, and generated images** live in your browser's **IndexedDB** (via `idb`). Writes are serialized per conversation, image binaries are stored atomically with their metadata, and a schema migration backfills existing data without ever clearing it.
-- **Generated assets live independently of conversations**: deleting a chat keeps every completed image in the History gallery.
+- **Conversations, messages, design briefs, and generated images** live in your browser's **IndexedDB** (via `idb`). Writes are serialized per conversation, image binaries are stored atomically with their metadata, and schema migrations backfill existing data without ever clearing it.
+- **Generated assets live independently of conversations**: deleting a chat keeps every completed image in the History gallery, and deleting a Project never touches conversations or assets.
 - **Server-side database persistence is planned** (Supabase/Neon/PostgreSQL connections can already be verified on the Database page) — configuring a database never silently enables synchronization.
-- Browser storage is finite. Very large image batches can hit quota; failures surface as warnings, images stay viewable for the session, and conversation state stays in memory.
+- Browser storage is finite. Very large image batches can hit quota; failures surface as warnings, images stay viewable for the session (marked "Session only"), and conversation state stays in memory.
 
 ## Provider capabilities (honesty notes)
 
