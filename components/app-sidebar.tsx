@@ -7,6 +7,7 @@ import { SearchIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import {
+  Command,
   CommandDialog,
   CommandEmpty,
   CommandGroup,
@@ -95,22 +96,26 @@ function SidebarSearch() {
         title="Search pages"
         description="Jump to an Aestry page"
       >
-        <CommandInput placeholder="Search pages..." />
-        <CommandList>
-          <CommandEmpty>No pages found.</CommandEmpty>
-          <CommandGroup heading="Pages">
-            {APP_NAV_ITEMS.map((item) => (
-              <CommandItem
-                key={item.href}
-                value={item.label}
-                onSelect={() => navigate(item.href)}
-              >
-                <item.icon />
-                {item.label}
-              </CommandItem>
-            ))}
-          </CommandGroup>
-        </CommandList>
+        {/* CommandDialog does not provide the cmdk store itself; the
+            <Command> wrapper supplies the context Input and List require. */}
+        <Command>
+          <CommandInput placeholder="Search pages..." />
+          <CommandList>
+            <CommandEmpty>No pages found.</CommandEmpty>
+            <CommandGroup heading="Pages">
+              {APP_NAV_ITEMS.map((item) => (
+                <CommandItem
+                  key={item.href}
+                  value={item.label}
+                  onSelect={() => navigate(item.href)}
+                >
+                  <item.icon />
+                  {item.label}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
       </CommandDialog>
     </>
   )
