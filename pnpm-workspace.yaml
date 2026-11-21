@@ -1,3 +1,5 @@
+allowBuilds:
+  protobufjs: true
 minimumReleaseAgeExclude:
   - lucide-react@1.77.0
 overrides:
