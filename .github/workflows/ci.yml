@@ -28,6 +28,9 @@ jobs:
       - name: TypeScript
         run: pnpm typecheck
 
+      - name: Tests
+        run: pnpm test
+
       - name: ESLint
         run: pnpm lint
 
