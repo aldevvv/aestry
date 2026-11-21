@@ -6,15 +6,7 @@ import Link from "next/link"
 import TextareaAutosize from "react-textarea-autosize"
 import { ErrorCode, useDropzone, type FileRejection } from "react-dropzone"
 import { toast } from "sonner"
-import {
-  AppWindowIcon,
-  ChevronDownIcon,
-  CpuIcon,
-  ImageIcon,
-  PaperclipIcon,
-  ShapesIcon,
-  XIcon,
-} from "lucide-react"
+import { CpuIcon, PaperclipIcon, XIcon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -99,18 +91,16 @@ function ModelPicker() {
         render={
           <Button
             variant="ghost"
-            size="sm"
-            className="gap-1.5 text-muted-foreground"
+            size="icon-sm"
+            aria-label="Model selection"
           >
             <CpuIcon />
-            <span className="hidden md:inline">No model configured</span>
-            <ChevronDownIcon />
           </Button>
         }
       />
       <PopoverContent align="end" className="w-80">
         <PopoverHeader>
-          <PopoverTitle>AI providers</PopoverTitle>
+          <PopoverTitle>No model configured</PopoverTitle>
           <PopoverDescription>
             Aestry generates assets through bring-your-own-key AI providers.
             Configure a provider to make the model selector and generation
@@ -213,7 +203,7 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
             ref={textareaRef}
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            minRows={3}
+            minRows={2}
             maxRows={12}
             placeholder="Describe the asset you want to create..."
             aria-label="Generation prompt"
@@ -257,16 +247,13 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
             }}
           >
             <TabsList aria-label="Asset type" className="rounded-lg">
-              <TabsTrigger value="app-icon" className="px-2">
-                <AppWindowIcon />
+              <TabsTrigger value="app-icon" className="px-2.5">
                 App Icon
               </TabsTrigger>
-              <TabsTrigger value="logo" className="px-2">
-                <ShapesIcon />
+              <TabsTrigger value="logo" className="px-2.5">
                 Logo
               </TabsTrigger>
-              <TabsTrigger value="og-image" className="px-2">
-                <ImageIcon />
+              <TabsTrigger value="og-image" className="px-2.5">
                 OG Image
               </TabsTrigger>
             </TabsList>
@@ -322,13 +309,13 @@ function PromptComposer({ onSubmit }: { onSubmit?: (request: GenerationRequest) 
           </Link>
         </p>
       )}
-      <div className="mt-4 flex flex-wrap justify-center gap-2">
+      <div className="mt-3 flex flex-wrap justify-center gap-1">
         {EXAMPLE_PROMPTS.map((example) => (
           <Button
             key={example}
-            variant="outline"
+            variant="ghost"
             size="sm"
-            className="rounded-full text-muted-foreground"
+            className="text-muted-foreground"
             onClick={() => applySuggestion(example)}
           >
             {example}
