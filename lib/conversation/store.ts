@@ -1,5 +1,6 @@
 import { create } from "zustand"
 
+import { revokeImageUrl } from "@/components/conversation/image-url"
 import {
   deleteConversationRecord,
   flushPendingWrites,
@@ -7,6 +8,7 @@ import {
   loadConversation,
   saveConversation,
 } from "./persistence"
+import { useStreamState } from "./stream-state"
 import {
   conversationTitleFromPrompt,
   type Conversation,
@@ -40,6 +42,14 @@ type ConversationsState = {
   /** Sidebar Recent entries, newest activity first. */
   summaryList: ConversationSummary[] | null
   createConversation: (skillId: SkillId, projectId?: string) => Conversation
+  /**
+   * Temporary Chat: creates an in-memory-only conversation. It never
+   * touches IndexedDB, never appears in Recent or History, and is
+   * discarded by `discardEphemeralConversations`.
+   */
+  createEphemeralConversation: (skillId: SkillId) => Conversation
+  /** Removes all ephemeral conversations and revokes their object URLs. */
+  discardEphemeralConversations: () => void
   setActive: (id: string | null) => void
   restoreFromStorage: (id: string) => Promise<Conversation | undefined>
   refreshSummaryList: () => Promise<void>
@@ -91,6 +101,9 @@ type ConversationsState = {
 
 export const useConversations = create<ConversationsState>()((set, get) => {
   function persistConversationRecord(conversation: Conversation) {
+    // Temporary Chats never touch storage — not on creation, not on any
+    // later mutation funneling through this single persistence gate.
+    if (conversation.ephemeral) return
     void saveConversation(conversation).catch(() => {
       useConversations.setState({
         storageWarning:
@@ -195,6 +208,80 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       persistConversationRecord(conversation)
       refreshSummaries()
       return conversation
+    },
+
+    createEphemeralConversation: (skillId) => {
+      const now = new Date().toISOString()
+      const conversation: Conversation = {
+        id: crypto.randomUUID(),
+        title: "Temporary chat",
+        titleSource: "fallback",
+        skillId,
+        ephemeral: true,
+        phase: "idle",
+        messages: [],
+        brief: null,
+        generations: {},
+        createdAt: now,
+        updatedAt: now,
+      }
+      set((state) => ({
+        conversations: {
+          ...state.conversations,
+          [conversation.id]: conversation,
+        },
+        activeId: conversation.id,
+      }))
+      // Deliberately no persistence and no summary refresh: a Temporary
+      // Chat is invisible to Recent and to IndexedDB by construction.
+      return conversation
+    },
+
+    discardEphemeralConversations: () => {
+      const state = get()
+      const ephemeralIds = Object.values(state.conversations)
+        .filter((conversation) => conversation.ephemeral)
+        .map((conversation) => conversation.id)
+      if (ephemeralIds.length === 0) return
+      // Revoke object URLs the ephemeral session created (generated and
+      // reference images) so no blob outlives the session.
+      for (const id of ephemeralIds) {
+        const conversation = state.conversations[id]
+        for (const generation of Object.values(conversation.generations)) {
+          for (const item of generation.items) {
+            if (item.imageId) revokeImageUrl(item.imageId)
+          }
+        }
+        for (const message of conversation.messages) {
+          if (
+            message.role === "user" &&
+            message.content.type === "text" &&
+            message.content.references
+          ) {
+            for (const reference of message.content.references) {
+              revokeImageUrl(reference.imageId)
+            }
+          }
+        }
+      }
+      set((current) => {
+        const conversations = { ...current.conversations }
+        for (const id of ephemeralIds) {
+          delete conversations[id]
+        }
+        const activeWasEphemeral =
+          current.activeId !== null && ephemeralIds.includes(current.activeId)
+        return {
+          conversations,
+          activeId: activeWasEphemeral ? null : current.activeId,
+        }
+      })
+      // Any in-flight stream keyed to a discarded conversation is aborted
+      // by the route's unmount handler; the ids no longer resolve anywhere.
+      for (const id of ephemeralIds) {
+        useStreamState.getState().setBusy(id, false)
+        useStreamState.getState().clearStreaming(id)
+      }
     },
 
     setActive: (id) => set({ activeId: id }),

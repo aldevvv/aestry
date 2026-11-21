@@ -94,6 +94,11 @@ export type Conversation = {
   /** Owning Project, when the conversation is organized into one. */
   projectId?: string
   skillId: SkillId
+  /**
+   * True for Temporary Chats: the record lives in memory only, never
+   * touches IndexedDB, and is discarded when its route is left.
+   */
+  ephemeral?: true
   phase: ConversationPhase
   messages: Message[]
   brief: DesignBrief | null

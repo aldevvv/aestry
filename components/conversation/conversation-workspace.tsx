@@ -77,10 +77,26 @@ const WELCOME_SUGGESTIONS: string[] = [
   "Create an OG image for my open-source project.",
 ]
 
+/** Slim, obvious Temporary Chat state line — not a large warning panel. */
+function TemporaryNotice() {
+  return (
+    <div
+      role="status"
+      className="mx-auto mb-3 w-full max-w-4xl rounded-lg border border-dashed border-border px-3 py-1.5 text-center text-xs text-muted-foreground"
+    >
+      Temporary chat — messages and images are not saved and disappear when
+      you leave this page.
+    </div>
+  )
+}
+
 export function ConversationWorkspace({
   conversationId,
+  ephemeral,
 }: {
   conversationId?: string
+  /** Temporary Chat mode: in-memory only, discarded when this route is left. */
+  ephemeral?: boolean
 }) {
   const router = useRouter()
   const mounted = useMounted()
@@ -126,9 +142,31 @@ export function ConversationWorkspace({
   >([])
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const [nearBottom, setNearBottom] = React.useState(true)
+  // Ephemeral reference data lives in memory only (Temporary Chat).
+  const ephemeralReferenceData = React.useRef<
+    Map<string, { mimeType: string; data: string }>
+  >(new Map())
+  // Aborted when a Temporary Chat is left mid-stream, so no delayed
+  // callback writes into a discarded session.
+  const navAbortRef = React.useRef<AbortController | null>(null)
+
+  React.useEffect(() => {
+    if (!ephemeral) return
+    // Entering Temporary Chat always starts fresh: leftovers from a
+    // previous temporary session are discarded on entry.
+    useConversations.getState().discardEphemeralConversations()
+    const controller = new AbortController()
+    navAbortRef.current = controller
+    return () => {
+      controller.abort()
+      navAbortRef.current = null
+      useConversations.getState().discardEphemeralConversations()
+    }
+  }, [ephemeral])
 
   // Route <-> conversation synchronization.
   React.useEffect(() => {
+    if (ephemeral) return
     const state = useConversations.getState()
     if (conversationId) {
       if (state.conversations[conversationId]) {
@@ -139,7 +177,7 @@ export function ConversationWorkspace({
     } else {
       state.setActive(null)
     }
-  }, [conversationId])
+  }, [conversationId, ephemeral])
 
   // Follow new messages only when the user is near the bottom.
   const scrollToBottom = React.useCallback((smooth: boolean) => {
@@ -321,9 +359,14 @@ export function ConversationWorkspace({
       let target = conversation
       if (!target) {
         // The consultant assigns the asset skill from the request; the
-        // conversation starts neutral until then.
-        target = useConversations.getState().createConversation("app-icon")
-        router.push(`/chat/${target.id}`)
+        // conversation starts neutral until then. Temporary Chat creates
+        // an in-memory conversation and stays on its own route.
+        target = ephemeral
+          ? useConversations.getState().createEphemeralConversation("app-icon")
+          : useConversations.getState().createConversation("app-icon")
+        if (!ephemeral) {
+          router.push(`/chat/${target.id}`)
+        }
       }
       const targetId = target.id
       useStreamState.getState().setBusy(targetId, true)
@@ -378,15 +421,26 @@ export function ConversationWorkspace({
         for (const file of files) {
           const imageId = crypto.randomUUID()
           const mimeType = file.type || "image/png"
-          await saveImageBlob({
-            id: imageId,
-            conversationId: target.id,
-            role: "reference",
-            mimeType,
-            blob: file,
-          })
+          const base64 = await fileToBase64(file)
+          if (ephemeral) {
+            // Temporary Chat: references stay in memory only — object URL
+            // for viewing, base64 for the in-flight request, no IndexedDB.
+            cacheImageUrl(imageId, URL.createObjectURL(file))
+            ephemeralReferenceData.current.set(imageId, {
+              mimeType,
+              data: base64.data,
+            })
+          } else {
+            await saveImageBlob({
+              id: imageId,
+              conversationId: target.id,
+              role: "reference",
+              mimeType,
+              blob: file,
+            })
+          }
           storedReferences.push({ imageId, mimeType })
-          referenceImages.push(await fileToBase64(file))
+          referenceImages.push(base64)
         }
 
         useConversations.getState().appendMessage(target.id, {
@@ -468,7 +522,12 @@ export function ConversationWorkspace({
                 .setContextTokens(targetId, promptTokens)
             },
           },
-          AbortSignal.timeout(180_000)
+          ephemeral
+            ? AbortSignal.any([
+                AbortSignal.timeout(180_000),
+                ...(navAbortRef.current ? [navAbortRef.current.signal] : []),
+              ])
+            : AbortSignal.timeout(180_000)
         )
         useStreamState.getState().clearStreaming(targetId)
         if (!result.ok) {
@@ -553,6 +612,9 @@ export function ConversationWorkspace({
           state.setGenerationPlan(target.id, result.outcome.generationPlan)
         }
       } catch (error) {
+        // Leaving a Temporary Chat aborts its stream deliberately: no error
+        // surface for a session the user has already discarded.
+        if (ephemeral && navAbortRef.current?.signal.aborted) return
         const message =
           error instanceof DOMException && error.name === "TimeoutError"
             ? "The consultation timed out."
@@ -571,7 +633,7 @@ export function ConversationWorkspace({
         useStreamState.getState().setBusy(targetId, false)
       }
     },
-    [busyAny, consultation, conversation, confirmCompactionNeeded, project, router, runCompaction]
+    [busyAny, consultation, conversation, confirmCompactionNeeded, ephemeral, project, router, runCompaction]
   )
 
   const runGeneration = React.useCallback(
@@ -604,6 +666,12 @@ export function ConversationWorkspace({
 
       const referenceImages: Array<{ mimeType: string; data: string }> = []
       for (const reference of pendingReferences) {
+        // Ephemeral references live in memory only.
+        const inMemory = ephemeralReferenceData.current.get(reference.imageId)
+        if (inMemory) {
+          referenceImages.push({ mimeType: inMemory.mimeType, data: inMemory.data })
+          continue
+        }
         try {
           const stored = await loadImageBlob(reference.imageId)
           if (!stored) continue
@@ -702,29 +770,33 @@ export function ConversationWorkspace({
             // The image is only reported as durably stored once the atomic
             // blob + asset write succeeds; a failure keeps it viewable for
             // this session, marks it session-only, and surfaces a storage
-            // warning instead.
+            // warning instead. Temporary Chats skip persistence entirely.
             let persistence: "persisted" | "session-only" = "persisted"
-            try {
-              await saveGeneratedAsset({
-                id: imageId,
-                conversationId: conversation.id,
-                generationId: record.id,
-                skillId: conversation.skillId,
-                imageModel: generation.model,
-                mimeType: item.mimeType,
-                blob,
-              })
-            } catch (storageError) {
+            if (conversation.ephemeral) {
               persistence = "session-only"
-              storageFailures += 1
-              const quota =
-                storageError instanceof Error &&
-                storageError.name === "QuotaExceededError"
-              toast.error(
-                quota
-                  ? "Browser storage is full — the image will be lost when this page closes."
-                  : "The image could not be saved to browser storage."
-              )
+            } else {
+              try {
+                await saveGeneratedAsset({
+                  id: imageId,
+                  conversationId: conversation.id,
+                  generationId: record.id,
+                  skillId: conversation.skillId,
+                  imageModel: generation.model,
+                  mimeType: item.mimeType,
+                  blob,
+                })
+              } catch (storageError) {
+                persistence = "session-only"
+                storageFailures += 1
+                const quota =
+                  storageError instanceof Error &&
+                  storageError.name === "QuotaExceededError"
+                toast.error(
+                  quota
+                    ? "Browser storage is full — the image will be lost when this page closes."
+                    : "The image could not be saved to browser storage."
+                )
+              }
             }
             cacheImageUrl(imageId, URL.createObjectURL(blob))
             done += 1
@@ -810,6 +882,11 @@ export function ConversationWorkspace({
       // generation used: they are reloaded from the record.
       const retryReferences: Array<{ mimeType: string; data: string }> = []
       for (const reference of record.referenceImageIds ?? []) {
+        const inMemory = ephemeralReferenceData.current.get(reference.imageId)
+        if (inMemory) {
+          retryReferences.push({ mimeType: inMemory.mimeType, data: inMemory.data })
+          continue
+        }
         try {
           const stored = await loadImageBlob(reference.imageId)
           if (!stored) continue
@@ -943,6 +1020,7 @@ export function ConversationWorkspace({
   if (!conversation) {
     return (
       <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col justify-center px-4 py-8 sm:px-6">
+        {ephemeral ? <TemporaryNotice /> : null}
         <div className="animate-in fade-in-0 slide-in-from-bottom-2 flex flex-col gap-2 text-center duration-500">
           <WelcomeOrb className="mb-4 flex justify-center" />
           <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
@@ -973,6 +1051,7 @@ export function ConversationWorkspace({
 
   return (
     <div className="flex h-[calc(100dvh-2.5rem)] flex-col">
+      {ephemeral ? <TemporaryNotice /> : null}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
