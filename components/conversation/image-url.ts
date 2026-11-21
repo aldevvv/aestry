@@ -35,8 +35,23 @@ function getServerSnapshot(): string | null {
 
 /** Registers an already-created object URL (e.g. right after generation). */
 export function cacheImageUrl(imageId: string, url: string): void {
+  const previous = urlCache.get(imageId)
+  if (previous) {
+    // A re-registered id must not leak its previous URL.
+    URL.revokeObjectURL(previous)
+  }
   urlCache.set(imageId, url)
   notify()
+}
+
+/** Drops the cached URL for an id, revoking the object URL if one exists. */
+export function revokeImageUrl(imageId: string): void {
+  const existing = urlCache.get(imageId)
+  if (existing) {
+    URL.revokeObjectURL(existing)
+    urlCache.delete(imageId)
+    notify()
+  }
 }
 
 function ensureLoaded(imageId: string): void {

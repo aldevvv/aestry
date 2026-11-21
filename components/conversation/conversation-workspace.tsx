@@ -29,6 +29,7 @@ import {
 import { detectGitHubUrl, fetchProjectContext } from "@/lib/conversation/project-context"
 import {
   loadImageBlob,
+  saveGeneratedAsset,
   saveImageBlob,
 } from "@/lib/conversation/persistence"
 import {
@@ -578,9 +579,10 @@ export function ConversationWorkspace({
 
         const results = data.results
         let done = 0
-        results.forEach((item: unknown, index: number) => {
+        let storageFailures = 0
+        for (const [index, item] of results.entries()) {
           const recordItem = record.items[index]
-          if (!recordItem) return
+          if (!recordItem) continue
           // Adapter contract: { ok: true, mimeType, data } per image.
           if (
             isRecord(item) &&
@@ -594,13 +596,30 @@ export function ConversationWorkspace({
               char.charCodeAt(0)
             )
             const blob = new Blob([bytes], { type: item.mimeType })
-            void saveImageBlob({
-              id: imageId,
-              conversationId: conversation.id,
-              role: "generated",
-              mimeType: item.mimeType,
-              blob,
-            })
+            // The image is only reported as durably stored once the atomic
+            // blob + asset write succeeds; a failure keeps it viewable for
+            // this session and surfaces a storage warning instead.
+            try {
+              await saveGeneratedAsset({
+                id: imageId,
+                conversationId: conversation.id,
+                generationId: record.id,
+                skillId: conversation.skillId,
+                imageModel: generation.model,
+                mimeType: item.mimeType,
+                blob,
+              })
+            } catch (storageError) {
+              storageFailures += 1
+              const quota =
+                storageError instanceof Error &&
+                storageError.name === "QuotaExceededError"
+              toast.error(
+                quota
+                  ? "Browser storage is full — the image will be lost when this page closes."
+                  : "The image could not be saved to browser storage."
+              )
+            }
             cacheImageUrl(imageId, URL.createObjectURL(blob))
             done += 1
             useConversations
@@ -624,11 +643,15 @@ export function ConversationWorkspace({
                 error: message,
               })
           }
-        })
+        }
+        const storageWarning =
+          storageFailures > 0
+            ? `${storageFailures.toString()} generated image${storageFailures === 1 ? "" : "s"} could not be saved to browser storage and will be lost when this page closes.`
+            : undefined
         useConversations.getState().updateGeneration(conversation.id, record.id, {
           status: "done",
           prompt: compiledPrompt,
-          warning,
+          warning: [warning, storageWarning].filter(Boolean).join(" ") || undefined,
         })
         useConversations.getState().setPhase(conversation.id, "reviewing")
         setPendingReferences([])
@@ -706,13 +729,19 @@ export function ConversationWorkspace({
           const binary = atob(first.data)
           const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
           const blob = new Blob([bytes], { type: first.mimeType })
-          void saveImageBlob({
-            id: imageId,
-            conversationId: conversation.id,
-            role: "generated",
-            mimeType: first.mimeType,
-            blob,
-          })
+          try {
+            await saveGeneratedAsset({
+              id: imageId,
+              conversationId: conversation.id,
+              generationId,
+              skillId: record.skillId,
+              imageModel: generation.model,
+              mimeType: first.mimeType,
+              blob,
+            })
+          } catch {
+            toast.error("The image could not be saved to browser storage.")
+          }
           cacheImageUrl(imageId, URL.createObjectURL(blob))
           useConversations
             .getState()
