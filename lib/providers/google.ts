@@ -72,11 +72,21 @@ function clientFor(providerId: BuiltinProviderId): {
   return { client, config }
 }
 
-/** Maps SDK errors to user-safe provider errors without echoing details. */
+/**
+ * Maps SDK errors to user-facing provider errors. The upstream message
+ * (e.g. "API key not valid. Please pass a valid API key.") is the most
+ * useful thing to show in chat and never contains credential values;
+ * structured events and raw excerpts live in the Terminal diagnostics.
+ */
 function mapSdkError(error: unknown, fallback: string): ProviderRequestError {
   if (error instanceof ApiError) {
     const status =
       error.status >= 400 && error.status < 500 ? error.status : 502
+    const upstream =
+      typeof error.message === "string" ? error.message.trim() : ""
+    if (upstream.length > 0 && upstream.length <= 400) {
+      return new ProviderRequestError(status, upstream)
+    }
     const categoryDetail =
       status === 401 || status === 403
         ? "The server's Google credentials were rejected by the provider."

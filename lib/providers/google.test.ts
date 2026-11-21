@@ -37,8 +37,8 @@ vi.mock("@google/genai", () => ({
   },
   ApiError: class extends Error {
     status: number
-    constructor(info: { status: number }) {
-      super("api error")
+    constructor(info: { message: string; status: number }) {
+      super(info.message)
       this.status = info.status
     }
   },
@@ -139,10 +139,25 @@ describe("listGoogleModels", () => {
     expect(listCalls).toBe(1)
   })
 
-  it("maps upstream failures to sanitized provider errors", async () => {
+  it("surfaces the upstream error message to the user", async () => {
     sdkState.models = {
       list: vi.fn(async () => {
-        throw new ApiError({ message: "api error", status: 401 })
+        throw new ApiError({
+          message: "API key not valid. Please pass a valid API key.",
+          status: 401,
+        })
+      }),
+    }
+    await expect(listGoogleModels("gemini")).rejects.toMatchObject({
+      status: 401,
+      message: "API key not valid. Please pass a valid API key.",
+    })
+  })
+
+  it("falls back to a category message when upstream text is oversized", async () => {
+    sdkState.models = {
+      list: vi.fn(async () => {
+        throw new ApiError({ message: "x".repeat(500), status: 401 })
       }),
     }
     await expect(listGoogleModels("gemini")).rejects.toMatchObject({
@@ -348,13 +363,19 @@ describe("generateImagesGoogle", () => {
         if (call === 1) {
           return geminiChunk([{ inlineData: { mimeType: "image/png", data: "QUJD" } }])
         }
-        throw new ApiError({ message: "api error", status: 429 })
+        throw new ApiError({
+          message: "Quota exceeded for images per day.",
+          status: 429,
+        })
       }),
     }
     const results = await generateImagesGoogle(basePayload)
     expect(results).toHaveLength(2)
     expect(results[0].ok).toBe(true)
-    expect(results[1]).toEqual({ ok: false, error: "Rate limited by the provider — try again shortly." })
+    expect(results[1]).toEqual({
+      ok: false,
+      error: "Quota exceeded for images per day.",
+    })
   })
 
   it("surfaces model refusals as errors, not successes", async () => {

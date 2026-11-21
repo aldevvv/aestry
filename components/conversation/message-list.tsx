@@ -3,6 +3,8 @@
 import * as React from "react"
 import Image from "next/image"
 import {
+  ChevronDownIcon,
+  ChevronUpIcon,
   DownloadIcon,
   ImagePlusIcon,
   RefreshCwIcon,
@@ -28,6 +30,68 @@ const EXTENSIONS: Record<string, string> = {
 
 function aspectClassName(aspect: string): string {
   return aspect === "landscape" ? "aspect-[1200/630]" : "aspect-square"
+}
+
+// 50 lines at text-sm/relaxed (14px × 1.625).
+const USER_BUBBLE_MAX_LINES = 50
+const USER_BUBBLE_COLLAPSED_HEIGHT = Math.round(
+  USER_BUBBLE_MAX_LINES * 1.625 * 14
+)
+
+/**
+ * User message bubble. Hugs the length of the message; content beyond
+ * roughly 50 rendered lines collapses behind a "Show all" chevron so one
+ * long paste cannot dominate the whole thread.
+ */
+function UserTextBubble({ text }: { text: string }) {
+  const [expanded, setExpanded] = React.useState(false)
+  const [overflowing, setOverflowing] = React.useState(false)
+  const innerRef = React.useRef<HTMLDivElement | null>(null)
+
+  React.useEffect(() => {
+    const inner = innerRef.current
+    if (!inner) return
+    // ResizeObserver fires on observe (covering the initial measurement)
+    // and its callback runs async, keeping the effect lint-clean.
+    const observer = new ResizeObserver(() => {
+      setOverflowing(inner.scrollHeight > USER_BUBBLE_COLLAPSED_HEIGHT)
+    })
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [text])
+
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <div className="w-fit max-w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground [&_p]:my-1.5">
+        <div
+          ref={innerRef}
+          className="break-words"
+          style={
+            expanded
+              ? undefined
+              : { maxHeight: USER_BUBBLE_COLLAPSED_HEIGHT, overflow: "hidden" }
+          }
+        >
+          <Markdown content={text} />
+        </div>
+      </div>
+      {overflowing ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((previous) => !previous)}
+          aria-expanded={expanded}
+          className="flex items-center gap-1 rounded-md px-1 py-0.5 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {expanded ? (
+            <ChevronUpIcon className="size-3.5" />
+          ) : (
+            <ChevronDownIcon className="size-3.5" />
+          )}
+          {expanded ? "Show less" : "Show all"}
+        </button>
+      ) : null}
+    </div>
+  )
 }
 
 function ReferenceThumb({ imageId }: { imageId: string }) {
@@ -228,9 +292,7 @@ export function MessageListItem({
                 ))}
               </div>
             ) : null}
-            <div className="w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground [&_p]:my-1.5">
-              <Markdown content={content.text} />
-            </div>
+            <UserTextBubble text={content.text} />
           </>
         ) : null}
       </div>
