@@ -1,794 +1,164 @@
 "use client"
 
 import * as React from "react"
-import Image from "next/image"
-import { toast } from "sonner"
 import {
-  EyeIcon,
-  EyeOffIcon,
+  CloudIcon,
   KeyRoundIcon,
   PlugIcon,
-  Trash2Icon,
+  RefreshCwIcon,
+  ShieldCheckIcon,
   TriangleAlertIcon,
 } from "lucide-react"
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { ActivityOrb } from "@/components/thinking-indicator"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMounted } from "@/hooks/use-mounted"
-import {
-  GOOGLE_PROVIDER_LABEL,
-  PROVIDER_KIND_LABELS,
-  collectFieldErrors,
-  googleFormSchema,
-  isInsecureEndpoint,
-  maskApiKey,
-  openAiCompatibleFormSchema,
-  useProviders,
-  type ModelCapability,
-  type ProviderConfig,
-  type ProviderKind,
-  type ProviderModel,
-  type ProviderRole,
-} from "@/lib/provider-store"
 import { ModelRoleSelect } from "@/components/model-role-select"
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null
-}
-
-type ModelState = {
-  models: ProviderModel[]
-  multimodal: string
-  image: string
-  multimodalManual: string
-  imageManual: string
-  loading: boolean
-  error: string | null
-}
-
-const idleModelState: ModelState = {
-  models: [],
-  multimodal: "",
-  image: "",
-  multimodalManual: "",
-  imageManual: "",
-  loading: false,
-  error: null,
-}
-
-function modelLabel(models: ProviderModel[], id: string): string {
-  const model = models.find((item) => item.id === id)
-  return model?.label ?? id
-}
+import {
+  BUILTIN_PROVIDERS,
+  providerLabel,
+  useProviders,
+  type BuiltinProviderId,
+  type ProviderStatus,
+} from "@/lib/provider-store"
 
 /**
- * Asks the Aestry server to list the models an API key can access, bucketed
- * into multimodal (chat, brainstorming, reference images) and image
- * generation. The key travels only to this self-hosted server and straight
- * on to the provider endpoint.
+ * Environment-aware provider management. Aestry's credentials live in the
+ * server environment, so this page reports sanitized statuses and lets the
+ * operator verify connections and choose role models — it never collects
+ * API keys.
  */
-async function requestModels(payload: {
-  kind: ProviderKind
-  apiKey: string
-  baseUrl?: string
-}): Promise<{ models: ProviderModel[] } | { error: string }> {
-  try {
-    const response = await fetch("/api/providers/models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-    const data: unknown = await response.json().catch(() => null)
-    if (!response.ok) {
-      return {
-        error:
-          isRecord(data) && typeof data.error === "string"
-            ? data.error
-            : "Could not load models.",
-      }
-    }
-    if (!isRecord(data) || !Array.isArray(data.models)) {
-      return { error: "The provider response could not be read." }
-    }
-    const models: ProviderModel[] = []
-    for (const item of data.models) {
-      if (
-        isRecord(item) &&
-        typeof item.id === "string" &&
-        (item.capability === "multimodal" || item.capability === "image")
-      ) {
-        models.push({
-          id: item.id,
-          capability: item.capability,
-          label: typeof item.label === "string" ? item.label : undefined,
-          contextWindow:
-            typeof item.contextWindow === "number"
-              ? item.contextWindow
-              : undefined,
-        })
-      }
-    }
-    return { models }
-  } catch {
-    return { error: "Could not reach the Aestry server." }
+
+function StatusBadge({
+  status,
+  verification,
+}: {
+  status: ProviderStatus
+  verification?: { verified: boolean; error?: string }
+}) {
+  if (verification?.verified) {
+    return <Badge variant="secondary">Verified</Badge>
   }
+  if (verification && !verification.verified) {
+    return <Badge variant="destructive">Verification failed</Badge>
+  }
+  if (status.configured) {
+    return <Badge variant="secondary">Configured</Badge>
+  }
+  return <Badge variant="outline">Not configured</Badge>
 }
 
-function ApiKeyField({
-  id,
-  value,
-  onChange,
-  error,
-  placeholder,
+function ProviderCard({
+  providerId,
+  status,
 }: {
-  id: string
-  value: string
-  onChange: (value: string) => void
-  error?: string
-  placeholder?: string
+  providerId: BuiltinProviderId
+  status: ProviderStatus | undefined
 }) {
-  const [visible, setVisible] = React.useState(false)
+  const loadModels = useProviders((state) => state.loadModels)
+  const verifyProvider = useProviders((state) => state.verifyProvider)
+  const loadingModels = useProviders((state) => state.loadingModels[providerId])
+  const modelError = useProviders((state) => state.modelErrors[providerId])
+  const verifying = useProviders((state) => state.verifying[providerId])
+  const verification = useProviders(
+    (state) => state.verification[providerId]
+  )
+  const models = useProviders(
+    (state) => state.modelsCache[providerId] ?? []
+  )
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id}>API key</Label>
-      <div className="relative">
-        <Input
-          id={id}
-          type={visible ? "text" : "password"}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          placeholder={placeholder}
-          autoComplete="off"
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-error` : undefined}
-          className="pr-9"
-        />
-        <button
-          type="button"
-          onClick={() => setVisible((previous) => !previous)}
-          aria-label={visible ? "Hide API key" : "Show API key"}
-          aria-pressed={visible}
-          className="absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground"
-        >
-          {visible ? (
-            <EyeOffIcon className="size-4" />
-          ) : (
-            <EyeIcon className="size-4" />
-          )}
-        </button>
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
+          {providerId === "gemini" ? <KeyRoundIcon /> : <CloudIcon />}
+        </span>
+        <p className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+          {providerLabel(providerId)}
+        </p>
+        {status ? (
+          <StatusBadge status={status} verification={verification} />
+        ) : (
+          <Badge variant="outline">Checking…</Badge>
+        )}
       </div>
-      {error ? (
-        <p id={`${id}-error`} className="text-xs text-destructive">
-          {error}
-        </p>
-      ) : null}
-    </div>
-  )
-}
-
-function FormField({
-  label,
-  htmlFor,
-  error,
-  hint,
-  children,
-}: {
-  label: string
-  htmlFor: string
-  error?: string
-  hint?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
-      {error ? (
-        <p id={`${htmlFor}-error`} className="text-xs text-destructive">
-          {error}
-        </p>
-      ) : hint ? (
-        <p className="text-xs text-muted-foreground">{hint}</p>
-      ) : null}
-    </div>
-  )
-}
-
-function CapabilitySelector({
-  id,
-  capability,
-  providerKind,
-  models,
-  value,
-  onChange,
-}: {
-  id: string
-  capability: ModelCapability
-  providerKind: ProviderKind
-  models: ProviderModel[]
-  value: string
-  onChange: (id: string) => void
-}) {
-  const options = models.filter((model) => model.capability === capability)
-  const label =
-    capability === "multimodal" ? "Multimodal model" : "Image generation model"
-  const hint =
-    capability === "multimodal"
-      ? "For brainstorming, chatting, and reading reference images."
-      : "For generating app icons, logos, and OG images."
-
-  return (
-    <FormField label={label} htmlFor={id} hint={hint}>
-      {options.length > 0 ? (
-        <Select
-          value={value || null}
-          onValueChange={(value) => {
-            if (typeof value === "string") {
-              onChange(value)
-            }
-          }}
-        >
-          <SelectTrigger size="sm" className="w-full" aria-label={label}>
-            <SelectValue>
-              {(selected) =>
-                typeof selected === "string" && selected
-                  ? modelLabel(models, selected)
-                  : "Choose a model"
-              }
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((model) => (
-              <SelectItem key={model.id} value={model.id}>
-                <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="flex items-center gap-1.5">
-                    {providerKind === "google" ? (
-                      <Image
-                        src="/images/Gemini.svg"
-                        alt=""
-                        width={16}
-                        height={16}
-                        unoptimized
-                        className="size-4 shrink-0"
-                      />
-                    ) : null}
-                    <span className="truncate">
-                      {model.label && model.label !== model.id
-                        ? model.label
-                        : model.id}
-                    </span>
-                  </span>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {model.id}
-                  </span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {status === undefined ? (
+        <div className="h-16 animate-pulse rounded-lg bg-muted/50" />
+      ) : !status.configured ? (
+        <p className="text-sm/relaxed text-muted-foreground">{status.setupHint}</p>
       ) : (
         <>
-          <Input
-            id={`${id}-manual`}
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            placeholder={
-              capability === "multimodal"
-                ? "Multimodal model id, e.g. gemini-2.5-flash"
-                : "Image model id, e.g. gemini-2.5-flash-image"
-            }
-            autoComplete="off"
-            aria-label={`${label} (manual)`}
-          />
-          <p className="text-xs text-muted-foreground">
-            No {capability === "multimodal" ? "multimodal" : "image generation"}{" "}
-            models were reported for this key — enter the model id manually.
-          </p>
-        </>
-      )}
-    </FormField>
-  )
-}
-
-function ProviderRow({
-  provider,
-  onRemove,
-}: {
-  provider: ProviderConfig
-  onRemove: () => void
-}) {
-  return (
-    <div className="flex items-start gap-3 rounded-xl border border-border bg-card p-3">
-      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
-        {provider.kind === "google" ? <KeyRoundIcon /> : <PlugIcon />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="text-sm font-medium text-foreground">
-            {provider.label}
-          </p>
-          <Badge variant="secondary">
-            {PROVIDER_KIND_LABELS[provider.kind]}
-          </Badge>
-        </div>
-        <div className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground">
-          {provider.imageModel ? (
-            <p className="truncate">Image · {provider.imageModel}</p>
-          ) : null}
-          {provider.multimodalModel ? (
-            <p className="truncate">
-              Multimodal · {provider.multimodalModel}
+          <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+            <p>
+              Authentication ·{" "}
+              {status.connectionMode === "api-key"
+                ? "API key from the server environment"
+                : "Application Default Credentials"}
             </p>
-          ) : null}
-          <p className="truncate">
-            {[provider.baseUrl, `Key ${maskApiKey(provider.apiKey)}`]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        </div>
-      </div>
-      <AlertDialog>
-        <AlertDialogTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Remove ${provider.label}`}
-            >
-              <Trash2Icon />
-            </Button>
-          }
-        />
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove {provider.label}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The stored API key is deleted from this browser. You can add the
-              provider again at any time.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel size="sm">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              size="sm"
-              onClick={onRemove}
-            >
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
-  )
-}
-
-function AddProviderForm() {
-  const providers = useProviders((state) => state.providers)
-  const addProvider = useProviders((state) => state.addProvider)
-  const [kind, setKind] = React.useState<ProviderKind>("google")
-  const [errors, setErrors] = React.useState<Record<string, string>>({})
-
-  const [googleApiKey, setGoogleApiKey] = React.useState("")
-  const [googleModelState, setGoogleModelState] =
-    React.useState<ModelState>(idleModelState)
-
-  const [customLabel, setCustomLabel] = React.useState("")
-  const [customBaseUrl, setCustomBaseUrl] = React.useState("")
-  const [customApiKey, setCustomApiKey] = React.useState("")
-  const [customModelState, setCustomModelState] =
-    React.useState<ModelState>(idleModelState)
-
-  const hasGoogle = providers.some((provider) => provider.kind === "google")
-  const insecureCustomEndpoint =
-    customBaseUrl.trim().length > 0 &&
-    isInsecureEndpoint(customBaseUrl.trim())
-
-  const isProviderKind = (value: string): value is ProviderKind =>
-    value === "google" || value === "openai-compatible"
-
-  const googleMultimodal =
-    googleModelState.multimodal || googleModelState.multimodalManual.trim()
-  const googleImage = googleModelState.image || googleModelState.imageManual.trim()
-  const googleReady = Boolean(googleMultimodal && googleImage)
-
-  const customMultimodal =
-    customModelState.multimodal || customModelState.multimodalManual.trim()
-  const customImage = customModelState.image || customModelState.imageManual.trim()
-  const customReady = Boolean(customMultimodal && customImage)
-
-  const loadGoogleModels = async () => {
-    setGoogleModelState({ ...idleModelState, loading: true })
-    const result = await requestModels({
-      kind: "google",
-      apiKey: googleApiKey.trim(),
-    })
-    if ("error" in result) {
-      setGoogleModelState({ ...idleModelState, error: result.error })
-      return
-    }
-    setGoogleModelState({ ...idleModelState, models: result.models })
-  }
-
-  const loadCustomModels = async () => {
-    setCustomModelState({ ...idleModelState, loading: true })
-    const result = await requestModels({
-      kind: "openai-compatible",
-      apiKey: customApiKey.trim(),
-      baseUrl: customBaseUrl.trim(),
-    })
-    if ("error" in result) {
-      setCustomModelState({ ...idleModelState, error: result.error })
-      return
-    }
-    setCustomModelState({ ...idleModelState, models: result.models })
-  }
-
-  const submitGoogle = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const result = googleFormSchema.safeParse({ apiKey: googleApiKey })
-    if (!result.success) {
-      setErrors(collectFieldErrors(result.error))
-      return
-    }
-    if (!googleReady) return
-    addProvider({
-      id: crypto.randomUUID(),
-      kind: "google",
-      label: GOOGLE_PROVIDER_LABEL,
-      apiKey: result.data.apiKey,
-      multimodalModel: googleMultimodal,
-      imageModel: googleImage,
-      models: googleModelState.models.length
-        ? googleModelState.models
-        : undefined,
-      createdAt: new Date().toISOString(),
-    })
-    toast.success("Google Gemini saved in this browser")
-    setGoogleApiKey("")
-    setGoogleModelState(idleModelState)
-    setErrors({})
-  }
-
-  const submitCustom = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const result = openAiCompatibleFormSchema.safeParse({
-      label: customLabel,
-      baseUrl: customBaseUrl,
-      apiKey: customApiKey,
-    })
-    if (!result.success) {
-      setErrors(collectFieldErrors(result.error))
-      return
-    }
-    if (!customReady) return
-    addProvider({
-      id: crypto.randomUUID(),
-      kind: "openai-compatible",
-      label: result.data.label,
-      baseUrl: result.data.baseUrl.replace(/\/+$/, ""),
-      apiKey: result.data.apiKey,
-      multimodalModel: customMultimodal,
-      imageModel: customImage,
-      models: customModelState.models.length
-        ? customModelState.models
-        : undefined,
-      createdAt: new Date().toISOString(),
-    })
-    toast.success(`${result.data.label} saved in this browser`)
-    setCustomLabel("")
-    setCustomBaseUrl("")
-    setCustomApiKey("")
-    setCustomModelState(idleModelState)
-    setErrors({})
-  }
-
-  return (
-    <div className="flex flex-col gap-4">
-      <Tabs
-        value={kind}
-        onValueChange={(value) => {
-          if (typeof value === "string" && isProviderKind(value)) {
-            setKind(value)
-            setErrors({})
-          }
-        }}
-      >
-        <TabsList aria-label="Provider type">
-          <TabsTrigger value="google" className="px-2.5">
-            Google Gemini
-          </TabsTrigger>
-          <TabsTrigger value="openai-compatible" className="px-2.5">
-            OpenAI-compatible
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {kind === "google" ? (
-        hasGoogle ? (
-          <p className="rounded-xl border border-dashed border-border p-4 text-sm/relaxed text-muted-foreground">
-            Google Gemini is already configured. Remove it in the list above if
-            you want to replace the stored key.
-          </p>
-        ) : (
-          <form
-            onSubmit={submitGoogle}
-            noValidate
-            className="flex flex-col gap-4"
-          >
-            <ApiKeyField
-              id="google-api-key"
-              value={googleApiKey}
-              onChange={setGoogleApiKey}
-              error={errors.apiKey}
-              placeholder="Paste your Gemini API key"
-            />
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void loadGoogleModels()}
-                disabled={
-                  googleModelState.loading || googleApiKey.trim().length === 0
-                }
-              >
-                {googleModelState.loading ? (
-                  <>
-                    <ActivityOrb activity="models" size={20} />
-                    Loading…
-                  </>
-                ) : (
-                  "Load models"
-                )}
-              </Button>
-              <Button type="submit" disabled={!googleReady}>
-                Add Google Gemini
-              </Button>
-            </div>
-            {googleModelState.error ? (
-              <p className="text-xs text-destructive">
-                {googleModelState.error}
+            {status.configDetail.map((detail) => (
+              <p key={detail}>{detail}</p>
+            ))}
+            {status.chatModelOverride ? (
+              <p>Default chat model pinned via environment</p>
+            ) : null}
+            {status.imageModelOverride ? (
+              <p>Default image model pinned via environment</p>
+            ) : null}
+            {verification && !verification.verified && verification.error ? (
+              <p className="text-destructive">{verification.error}</p>
+            ) : null}
+            {modelError ? <p className="text-destructive">{modelError}</p> : null}
+            {models.length > 0 ? (
+              <p>
+                {models.filter((model) => model.capability === "multimodal").length}
+                {" "}multimodal ·{" "}
+                {models.filter((model) => model.capability === "image").length}
+                {" "}image generation models
               </p>
             ) : null}
-            {googleModelState.models.length > 0 ? (
-              <div className="flex flex-col gap-4">
-                <CapabilitySelector
-                  id="google-multimodal"
-                  capability="multimodal"
-                  providerKind="google"
-                  models={googleModelState.models}
-                  value={googleModelState.multimodal}
-                  onChange={(id) =>
-                    setGoogleModelState((state) => ({
-                      ...state,
-                      multimodal: id,
-                    }))
-                  }
-                />
-                <CapabilitySelector
-                  id="google-image"
-                  capability="image"
-                  providerKind="google"
-                  models={googleModelState.models}
-                  value={googleModelState.image}
-                  onChange={(id) =>
-                    setGoogleModelState((state) => ({ ...state, image: id }))
-                  }
-                />
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                Load models to verify the key and pick a multimodal and an
-                image generation model from what it can actually access.
-              </p>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Create a free key at{" "}
-              <a
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noreferrer"
-                className="font-medium text-foreground underline underline-offset-4"
-              >
-                Google AI Studio
-              </a>
-              .
-            </p>
-          </form>
-        )
-      ) : (
-        <form
-          onSubmit={submitCustom}
-          noValidate
-          className="flex flex-col gap-4"
-        >
-          <FormField
-            label="Name"
-            htmlFor="custom-label"
-            error={errors.label}
-            hint="Only visible to you — e.g. OpenRouter or a local endpoint."
-          >
-            <Input
-              id="custom-label"
-              value={customLabel}
-              onChange={(event) => setCustomLabel(event.target.value)}
-              placeholder="My provider"
-              autoComplete="off"
-              aria-invalid={errors.label ? true : undefined}
-              aria-describedby={
-                errors.label ? "custom-label-error" : undefined
-              }
-            />
-          </FormField>
-          <FormField
-            label="Base URL"
-            htmlFor="custom-base-url"
-            error={errors.baseUrl}
-            hint="OpenAI-compatible API root, e.g. https://api.example.com/v1."
-          >
-            <Input
-              id="custom-base-url"
-              value={customBaseUrl}
-              onChange={(event) => setCustomBaseUrl(event.target.value)}
-              placeholder="https://api.example.com/v1"
-              autoComplete="off"
-              inputMode="url"
-              aria-invalid={errors.baseUrl ? true : undefined}
-              aria-describedby={
-                errors.baseUrl ? "custom-base-url-error" : undefined
-              }
-            />
-          </FormField>
-          {insecureCustomEndpoint ? (
-            <p
-              className="flex items-start gap-2 text-xs text-warning"
-              role="note"
-            >
-              <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-              <span>
-                This endpoint uses HTTP, so the API key travels unencrypted.
-                Fine for trusted local networks — prefer HTTPS otherwise.
-              </span>
-            </p>
-          ) : null}
-          <ApiKeyField
-            id="custom-api-key"
-            value={customApiKey}
-            onChange={setCustomApiKey}
-            error={errors.apiKey}
-            placeholder="Paste the API key"
-          />
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              type="button"
               variant="outline"
               size="sm"
-              onClick={() => void loadCustomModels()}
-              disabled={
-                customModelState.loading ||
-                customApiKey.trim().length === 0 ||
-                customBaseUrl.trim().length === 0
-              }
+              onClick={() => void verifyProvider(providerId)}
+              disabled={verifying}
             >
-              {customModelState.loading ? (
+              {verifying ? (
+                <>
+                  <ActivityOrb activity="models" size={20} />
+                  Verifying…
+                </>
+              ) : (
+                <>
+                  <ShieldCheckIcon />
+                  Verify connection
+                </>
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => void loadModels(providerId)}
+              disabled={loadingModels}
+            >
+              {loadingModels ? (
                 <>
                   <ActivityOrb activity="models" size={20} />
                   Loading…
                 </>
               ) : (
-                "Load models"
+                <>
+                  <RefreshCwIcon />
+                  Refresh models
+                </>
               )}
             </Button>
-            <Button type="submit" disabled={!customReady}>
-              Add provider
-            </Button>
           </div>
-          {customModelState.error ? (
-            <p className="text-xs text-destructive">
-              {customModelState.error}
-            </p>
-          ) : null}
-          {customModelState.models.length > 0 ? (
-            <div className="flex flex-col gap-4">
-              <CapabilitySelector
-                id="custom-multimodal"
-                capability="multimodal"
-                providerKind="openai-compatible"
-                models={customModelState.models}
-                value={customModelState.multimodal}
-                onChange={(id) =>
-                  setCustomModelState((state) => ({
-                    ...state,
-                    multimodal: id,
-                  }))
-                }
-              />
-              <CapabilitySelector
-                id="custom-image"
-                capability="image"
-                providerKind="openai-compatible"
-                models={customModelState.models}
-                value={customModelState.image}
-                onChange={(id) =>
-                  setCustomModelState((state) => ({ ...state, image: id }))
-                }
-              />
-            </div>
-          ) : customModelState.error ? (
-            <div className="flex flex-col gap-4">
-              <CapabilitySelector
-                id="custom-multimodal"
-                capability="multimodal"
-                providerKind="openai-compatible"
-                models={[]}
-                value={customModelState.multimodalManual}
-                onChange={(id) =>
-                  setCustomModelState((state) => ({
-                    ...state,
-                    multimodalManual: id,
-                  }))
-                }
-              />
-              <CapabilitySelector
-                id="custom-image"
-                capability="image"
-                providerKind="openai-compatible"
-                models={[]}
-                value={customModelState.imageManual}
-                onChange={(id) =>
-                  setCustomModelState((state) => ({
-                    ...state,
-                    imageManual: id,
-                  }))
-                }
-              />
-            </div>
-          ) : null}
-        </form>
+        </>
       )}
-    </div>
-  )
-}
-
-function ActiveModelRole({
-  role,
-  capability,
-  label,
-  hint,
-}: {
-  role: ProviderRole
-  capability: ModelCapability
-  label: string
-  hint: string
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <ModelRoleSelect role={role} capability={capability} label={label} />
-      <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   )
 }
@@ -812,98 +182,154 @@ function ActiveModelsSection() {
         </p>
       </div>
       <div className="grid gap-4 rounded-xl border border-border bg-card p-4 sm:grid-cols-2">
-        <ActiveModelRole
-          role="consultation"
-          capability="multimodal"
-          label="Consultation model"
-          hint="Powers the design consultant in conversations."
-        />
-        <ActiveModelRole
-          role="generation"
-          capability="image"
-          label="Image generation model"
-          hint="Produces assets when you approve a brief."
-        />
+        <div className="flex flex-col gap-1.5">
+          <ModelRoleSelect
+            role="consultation"
+            capability="multimodal"
+            label="Consultation model"
+          />
+          <p className="text-xs text-muted-foreground">
+            Powers the design consultant in conversations.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <ModelRoleSelect
+            role="generation"
+            capability="image"
+            label="Image generation model"
+          />
+          <p className="text-xs text-muted-foreground">
+            Produces assets when you approve a brief.
+          </p>
+        </div>
       </div>
     </section>
   )
 }
 
 function ProvidersManager() {
-  const providers = useProviders((state) => state.providers)
-  const removeProvider = useProviders((state) => state.removeProvider)
   const mounted = useMounted()
-  // Persisted state rehydrates synchronously on the client, which would
-  // diverge from the server-rendered empty list; render placeholders until
-  // hydration completes.
-  const visible = mounted ? providers : []
+  const statuses = useProviders((state) => state.statuses)
+  const statusError = useProviders((state) => state.statusError)
+  const configErrors = useProviders((state) => state.configErrors)
+  const refreshStatus = useProviders((state) => state.refreshStatus)
+  const legacyCredentialsRemoved = useProviders(
+    (state) => state.legacyCredentialsRemoved
+  )
+  const acknowledgeLegacyNotice = useProviders(
+    (state) => state.acknowledgeLegacyNotice
+  )
+
+  React.useEffect(() => {
+    void refreshStatus()
+  }, [refreshStatus])
+
+  if (!mounted) {
+    return <div className="h-40 animate-pulse rounded-xl border border-border bg-muted/50" />
+  }
 
   return (
     <div className="flex flex-col gap-8">
-      <ActiveModelsSection />
-      <section
-        className="flex flex-col gap-4"
-        aria-labelledby="providers-list-heading"
-      >
-        <div className="flex flex-col gap-1">
-          <h2
-            id="providers-list-heading"
-            className="text-sm font-medium text-foreground"
-          >
-            Configured providers
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {visible.length === 1
-              ? "1 provider is stored in this browser."
-              : `${visible.length.toString()} providers are stored in this browser.`}
-          </p>
+      {legacyCredentialsRemoved ? (
+        <div className="flex items-start gap-3 rounded-xl border border-dashed border-border p-4">
+          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
+            <TriangleAlertIcon />
+          </span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
+            <p className="font-medium text-foreground">
+              Browser-stored API keys are no longer used
+            </p>
+            <p className="text-sm/relaxed text-muted-foreground">
+              Aestry now reads provider credentials from the server
+              environment only. The keys previously saved in this browser
+              were removed and were never transmitted anywhere — add them to
+              the server&rsquo;s .env.local to use them again.
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-1 self-start text-muted-foreground"
+              onClick={acknowledgeLegacyNotice}
+            >
+              Dismiss
+            </Button>
+          </div>
         </div>
-        {visible.length === 0 ? (
-          <div className="flex items-start gap-3 rounded-xl border border-dashed border-border p-4">
-            <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
-              <PlugIcon />
-            </span>
-            <div className="flex min-w-0 flex-col gap-1 text-sm">
-              <p className="font-medium text-foreground">No providers yet</p>
-              <p className="text-sm/relaxed text-muted-foreground">
-                Add one below to make it available to the composer.
-              </p>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {visible.map((provider) => (
-              <ProviderRow
-                key={provider.id}
-                provider={provider}
-                onRemove={() => {
-                  removeProvider(provider.id)
-                  toast.success(`${provider.label} removed`)
-                }}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      ) : null}
+
+      {statusError ? (
+        <p className="flex items-start gap-2 text-sm text-warning" role="note">
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+          <span>{statusError}</span>
+        </p>
+      ) : null}
+      {configErrors.map((error) => (
+        <p
+          key={error}
+          className="flex items-start gap-2 text-sm text-warning"
+          role="note"
+        >
+          <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" />
+          <span>{error}</span>
+        </p>
+      ))}
 
       <section
         className="flex flex-col gap-4"
-        aria-labelledby="providers-add-heading"
+        aria-labelledby="providers-configured-heading"
       >
         <div className="flex flex-col gap-1">
           <h2
-            id="providers-add-heading"
+            id="providers-configured-heading"
             className="text-sm font-medium text-foreground"
           >
-            Add a provider
+            Built-in providers
           </h2>
           <p className="text-sm text-muted-foreground">
-            Use the built-in Google Gemini integration, or point at any
-            OpenAI-compatible endpoint. Available models are loaded from the
-            provider itself, split into multimodal and image generation roles.
+            Credentials are configured in the server environment and never
+            reach the browser. A configured provider is not necessarily
+            verified — use Verify connection for an explicit check.
           </p>
         </div>
-        <AddProviderForm />
+        <div className="grid gap-4 lg:grid-cols-2">
+          {BUILTIN_PROVIDERS.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              providerId={provider.id}
+              status={statuses?.find((entry) => entry.id === provider.id)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <ActiveModelsSection />
+
+      <section
+        className="flex flex-col gap-3"
+        aria-labelledby="providers-upcoming-heading"
+      >
+        <div className="flex flex-col gap-1">
+          <h2
+            id="providers-upcoming-heading"
+            className="text-sm font-medium text-foreground"
+          >
+            Coming soon
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Additional first-party integrations are planned. Custom
+            OpenAI-compatible endpoints will return as a server-configured
+            provider — they are not available in this version.
+          </p>
+        </div>
+        <div className="flex items-center gap-3 rounded-xl border border-dashed border-border p-4">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
+            <PlugIcon />
+          </span>
+          <p className="min-w-0 flex-1 text-sm text-muted-foreground">
+            Custom OpenAI-compatible endpoints
+          </p>
+          <Badge variant="secondary">Soon</Badge>
+        </div>
       </section>
     </div>
   )

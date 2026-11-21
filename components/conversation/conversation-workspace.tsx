@@ -17,7 +17,6 @@ import {
   buildConsultationTurns,
 } from "@/lib/conversation/consultation"
 import {
-  extractPartialMessage,
   streamChat,
 } from "@/lib/conversation/streaming"
 import { ThinkingOrbIndicator, WelcomeOrb } from "@/components/thinking-indicator"
@@ -37,12 +36,10 @@ import {
   useConversations,
 } from "@/lib/conversation/store"
 import {
-  resolveSelection,
-  inferCapabilities,
+  selectedModelContextWindow,
   useProviders,
 } from "@/lib/provider-store"
 import {
-  getSkill,
   isSkillId,
 } from "@/lib/skills/registry"
 import type {
@@ -88,10 +85,14 @@ export function ConversationWorkspace({
   const conversation = useConversations(selectActiveConversation)
   const notFoundIds = useConversations((state) => state.notFoundIds)
   const storageWarning = useConversations((state) => state.storageWarning)
-  const providers = useProviders((state) => state.providers)
-  const selections = useProviders((state) => state.selections)
-  const consultation = resolveSelection(providers, selections.consultation)
-  const generation = resolveSelection(providers, selections.generation)
+  const consultation = useProviders((state) => state.selections.consultation)
+  const generation = useProviders((state) => state.selections.generation)
+  const refreshStatus = useProviders((state) => state.refreshStatus)
+
+  // Server-side provider statuses gate the composer and role selects.
+  React.useEffect(() => {
+    void refreshStatus()
+  }, [refreshStatus])
 
   const [busy, setBusy] = React.useState(false)
   const [compacting, setCompacting] = React.useState(false)
@@ -165,10 +166,8 @@ export function ConversationWorkspace({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            kind: consultation.provider.kind,
-            apiKey: consultation.provider.apiKey,
+            providerId: consultation.providerId,
             model: consultation.model,
-            baseUrl: consultation.provider.baseUrl,
             skillId: latest.skillId,
             history,
             mode: "compact",
@@ -255,19 +254,18 @@ export function ConversationWorkspace({
         }
 
         // Auto-compact BEFORE the new message is appended, when the projected
-        // context reaches 95% of the consultation model's window. The
-        // compaction point must land before this message, otherwise the
-        // message would be summarized away and never reach the model.
-        const consultationModelRecord = consultation.provider.models?.find(
-          (model) => model.id === consultation.model
+        // context approaches the consultation model's window. The compaction
+        // point must land before this message, otherwise the message would be
+        // summarized away and never reach the model.
+        const consultationModelWindow = selectedModelContextWindow(
+          useProviders.getState(),
+          "consultation"
         )
         const projectedTokens =
           (target.contextTokens ?? 0) +
           estimateTokens(text) +
           files.length * ESTIMATED_TOKENS_PER_IMAGE
-        if (
-          shouldAutoCompact(projectedTokens, consultationModelRecord?.contextWindow)
-        ) {
+        if (shouldAutoCompact(projectedTokens, consultationModelWindow)) {
           const compacted = await runCompaction(target.id)
           if (!compacted) {
             toast.warning(
@@ -340,32 +338,24 @@ export function ConversationWorkspace({
           16_000,
           latest?.compaction?.upToMessageId
         )
-        const capabilities = inferCapabilities(
-          consultation.provider.kind,
-          consultation.model
-        )
-        // Streamed consultation: deltas render live; the validated outcome
-        // arrives at the end of the stream.
-        let raw = ""
+        // Streamed consultation: the server extracts the user-facing message,
+        // so deltas render live; the validated outcome arrives at the end.
+        let streaming = ""
         const result = await streamChat(
           {
-            kind: consultation.provider.kind,
-            apiKey: consultation.provider.apiKey,
+            providerId: consultation.providerId,
             model: consultation.model,
-            baseUrl: consultation.provider.baseUrl,
             skillId: target.skillId,
             brief: target.brief,
             history,
             referenceImages:
-              capabilities.vision && referenceImages.length > 0
-                ? referenceImages
-                : undefined,
+              referenceImages.length > 0 ? referenceImages : undefined,
             projectContext: projectContextSummary,
           },
           {
             onDelta: (delta) => {
-              raw += delta
-              setStreamingText(extractPartialMessage(raw))
+              streaming += delta
+              setStreamingText(streaming)
             },
             onUsage: (promptTokens) => {
               // Authoritative context usage for the pie indicator.
@@ -477,13 +467,12 @@ export function ConversationWorkspace({
   const runGeneration = React.useCallback(
     async (count: 1 | 2 | 4) => {
       if (!conversation?.brief || !generation) return
-      const provider = generation.provider
       const record: GenerationRecord = {
         id: crypto.randomUUID(),
         skillId: conversation.skillId,
         prompt: "Compiled from the approved design brief",
         imageModel: generation.model,
-        providerLabel: provider.label,
+        providerLabel: generation.providerId === "gemini" ? "Google Gemini" : "Google Vertex AI",
         count,
         status: "running",
         items: Array.from({ length: count }, () => ({
@@ -526,14 +515,11 @@ export function ConversationWorkspace({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            kind: provider.kind,
-            apiKey: provider.apiKey,
+            providerId: generation.providerId,
             model: generation.model,
-            baseUrl: provider.baseUrl,
             skillId: conversation.skillId,
             brief: conversation.brief,
             count,
-            size: getSkill(conversation.skillId).openAiSize,
             referenceImages:
               referenceImages.length > 0 ? referenceImages : undefined,
           }),
@@ -703,14 +689,11 @@ export function ConversationWorkspace({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            kind: generation.provider.kind,
-            apiKey: generation.provider.apiKey,
+            providerId: generation.providerId,
             model: generation.model,
-            baseUrl: generation.provider.baseUrl,
             skillId: record.skillId,
             brief: conversation.brief,
             count: 1,
-            size: getSkill(record.skillId).openAiSize,
           }),
           signal: AbortSignal.timeout(240_000),
         })

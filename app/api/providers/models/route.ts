@@ -1,42 +1,46 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 
-import { listGoogleModels } from "@/lib/providers/google"
-import { listOpenAiCompatibleModels } from "@/lib/providers/openai-compatible"
+import {
+  assertModelAvailable,
+  listGoogleModels,
+} from "@/lib/providers/google"
+import { isBuiltinProviderId } from "@/lib/providers/registry"
 import { ProviderRequestError } from "@/lib/providers/types"
 import { requireAccess } from "@/lib/server/access"
 import { readJsonBody } from "@/lib/server/limits"
 
-// Same-origin proxy for provider model discovery. The API key travels from
-// the user's browser to their own self-hosted Aestry server and is used
-// exactly once, against the endpoint it belongs to. Keys are never logged
-// or forwarded anywhere else. Operator-access gated.
+// POST /api/providers/models — model discovery for a configured built-in
+// provider. Credentials resolve server-side; the browser never sends them.
+// Operator-access gated. An optional `model` + `role` validates a specific
+// selection instead of listing.
 
 const bodySchema = z.object({
-  kind: z.enum(["google", "openai-compatible"]),
-  apiKey: z.string().trim().min(1),
-  baseUrl: z.string().trim().optional(),
+  providerId: z.enum(["gemini", "vertex"]),
+  model: z.string().trim().min(1).max(120).optional(),
+  role: z.enum(["chat", "image"]).optional(),
 })
 
 export async function POST(request: Request): Promise<NextResponse> {
   const denial = requireAccess(request)
   if (denial) return denial
 
-  const body = await readJsonBody(request, 1024 * 1024)
+  const body = await readJsonBody(request, 4_096)
   if (!body.ok) {
     return NextResponse.json({ error: body.error }, { status: body.status })
   }
   const parsed = bodySchema.safeParse(body.data)
-  if (!parsed.success) {
+  if (!parsed.success || !isBuiltinProviderId(parsed.data.providerId)) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 })
   }
-  const { kind, apiKey, baseUrl } = parsed.data
+  const { providerId, model, role } = parsed.data
 
   try {
-    const models =
-      kind === "google"
-        ? await listGoogleModels(apiKey)
-        : await listOpenAiCompatibleModels(apiKey, baseUrl)
+    if (model && role) {
+      await assertModelAvailable(providerId, model, role)
+      return NextResponse.json({ available: true })
+    }
+    const models = await listGoogleModels(providerId)
     // Presentation order: image-capable models first, then alphabetical.
     models.sort(
       (a, b) =>

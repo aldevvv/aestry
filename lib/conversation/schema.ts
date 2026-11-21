@@ -36,10 +36,9 @@ export type ConsultationOutcome = {
 }
 
 export const chatRequestSchema = z.object({
-  kind: z.enum(["google", "openai-compatible"]),
-  apiKey: z.string().trim().min(1),
+  /** Which built-in provider handles this request; credentials resolve server-side. */
+  providerId: z.enum(["gemini", "vertex"]),
   model: z.string().trim().min(1).max(120),
-  baseUrl: z.string().trim().optional(),
   skillId: z.enum(["app-icon", "logo", "og-image"]),
   brief: designBriefSchema.nullish(),
   history: z

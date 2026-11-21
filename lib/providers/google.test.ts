@@ -1,7 +1,64 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { ApiError } from "@google/genai"
+
 import { classifyProviderModel, inferCapabilities } from "./models"
-import { generateImagesGoogle } from "./google"
+import {
+  __resetGoogleProviderCachesForTests,
+  assertModelAvailable,
+  consultGoogle,
+  generateImagesGoogle,
+  listGoogleModels,
+  streamGoogleConsult,
+} from "./google"
+
+/**
+ * The SDK client is mocked at the module boundary: these tests pin the
+ * adapter's contract (classification, thought filtering, server-side
+ * message extraction, empty-response mapping, per-item image results)
+ * without network access and without live credentials.
+ */
+
+const sdkState = vi.hoisted(() => ({
+  models: {} as {
+    list?: (params?: unknown) => Promise<unknown>
+    get?: (params: unknown) => Promise<unknown>
+    generateContent?: (params: unknown) => Promise<unknown>
+    generateContentStream?: (params: unknown) => Promise<unknown>
+    countTokens?: (params: unknown) => Promise<unknown>
+  },
+}))
+
+vi.mock("@google/genai", () => ({
+  GoogleGenAI: class {
+    get models() {
+      return sdkState.models
+    }
+  },
+  ApiError: class extends Error {
+    status: number
+    constructor(info: { status: number }) {
+      super("api error")
+      this.status = info.status
+    }
+  },
+}))
+
+beforeEach(() => {
+  vi.stubEnv("GOOGLE_API_KEY", "test-key-1234")
+  __resetGoogleProviderCachesForTests()
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+})
+
+function geminiChunk(parts: unknown[], extra: Record<string, unknown> = {}) {
+  return {
+    candidates: [{ content: { role: "model", parts }, ...extra }],
+  }
+}
 
 describe("classifyProviderModel", () => {
   it("buckets Google image models and filters unusable ones", () => {
@@ -47,108 +104,294 @@ describe("inferCapabilities", () => {
   })
 })
 
-describe("generateImagesGoogle", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals()
-  })
-  afterEach(() => {
-    vi.unstubAllGlobals()
+describe("listGoogleModels", () => {
+  it("classifies SDK models and caches the listing", async () => {
+    let listCalls = 0
+    sdkState.models = {
+      list: vi.fn(async () => {
+        listCalls += 1
+        return (async function* () {
+          yield {
+            name: "models/gemini-test-flash",
+            displayName: "Gemini Test Flash",
+            inputTokenLimit: 1_048_576,
+            supportedActions: ["generateContent"],
+          }
+          yield {
+            name: "models/gemini-test-image",
+            displayName: "Gemini Test Image",
+            supportedActions: ["generateContent"],
+          }
+          yield { name: "models/gemini-test-embedding", supportedActions: ["embedContent"] }
+        })()
+      }),
+    }
+    const models = await listGoogleModels("gemini")
+    expect(models.map((model) => model.id)).toEqual([
+      "gemini-test-flash",
+      "gemini-test-image",
+    ])
+    expect(
+      models.find((model) => model.id === "gemini-test-flash")?.contextWindow
+    ).toBe(1_048_576)
+    // Second call serves the cache without hitting discovery again.
+    await listGoogleModels("gemini")
+    expect(listCalls).toBe(1)
   })
 
+  it("maps upstream failures to sanitized provider errors", async () => {
+    sdkState.models = {
+      list: vi.fn(async () => {
+        throw new ApiError({ message: "api error", status: 401 })
+      }),
+    }
+    await expect(listGoogleModels("gemini")).rejects.toMatchObject({
+      status: 401,
+      message: "The server's Google credentials were rejected by the provider.",
+    })
+  })
+})
+
+describe("consultGoogle", () => {
+  it("extracts answer text and skips thought parts", async () => {
+    sdkState.models = {
+      generateContent: vi.fn(async () =>
+        geminiChunk([
+          { text: "internal reasoning", thought: true },
+          { text: '{"message": "Hello.", "phase": "clarifying"}' },
+        ])
+      ),
+    }
+    const reply = await consultGoogle({
+      providerId: "gemini",
+      model: "gemini-test-flash",
+      systemPrompt: "system",
+      turns: [{ role: "user", text: "hi" }],
+    })
+    expect(reply.text).toBe('{"message": "Hello.", "phase": "clarifying"}')
+    expect(reply.usage).toBeUndefined()
+  })
+
+  it("surfaces empty responses with their finish reason", async () => {
+    sdkState.models = {
+      generateContent: vi.fn(async () => geminiChunk([], { finishReason: "STOP" })),
+    }
+    await expect(
+      consultGoogle({
+        providerId: "gemini",
+        model: "gemini-test-flash",
+        systemPrompt: "system",
+        turns: [{ role: "user", text: "hi" }],
+      })
+    ).rejects.toMatchObject({
+      status: 502,
+      message: "The model returned no text (finishReason: STOP).",
+    })
+  })
+
+  it("reports safety-blocked prompts distinctly", async () => {
+    sdkState.models = {
+      generateContent: vi.fn(async () => ({
+        promptFeedback: { blockReason: "SAFETY" },
+        candidates: [],
+      })),
+    }
+    await expect(
+      consultGoogle({
+        providerId: "gemini",
+        model: "gemini-test-flash",
+        systemPrompt: "system",
+        turns: [{ role: "user", text: "hi" }],
+      })
+    ).rejects.toMatchObject({ status: 422 })
+  })
+
+  it("attaches reference images to the latest user turn", async () => {
+    let captured: unknown
+    sdkState.models = {
+      generateContent: vi.fn(async (params: unknown) => {
+        captured = params
+        return geminiChunk([{ text: '{"message": "ok"}' }])
+      }),
+    }
+    await consultGoogle({
+      providerId: "gemini",
+      model: "gemini-test-flash",
+      systemPrompt: "system",
+      turns: [
+        { role: "user", text: "first" },
+        { role: "assistant", text: "reply" },
+        { role: "user", text: "second" },
+      ],
+      referenceImages: [{ mimeType: "image/png", data: "QUJD" }],
+    })
+    const contents = (
+      captured as { contents: Array<{ role: string; parts: unknown[] }> }
+    ).contents
+    const lastUser = contents[contents.length - 1]
+    expect(lastUser.role).toBe("user")
+    expect(
+      lastUser.parts.some((part) => "inlineData" in (part as Record<string, unknown>))
+    ).toBe(true)
+  })
+})
+
+describe("streamGoogleConsult", () => {
+  it("emits server-extracted message deltas, never raw JSON", async () => {
+    sdkState.models = {
+      generateContentStream: vi.fn(async () =>
+        (async function* () {
+          yield geminiChunk([{ text: '{"message": "Hel' }])
+          yield geminiChunk([{ text: 'lo there", "phase"' }])
+          yield geminiChunk([{ text: ': "clarifying"}' }])
+        })()
+      ),
+    }
+    const deltas: string[] = []
+    const reply = await streamGoogleConsult(
+      {
+        providerId: "gemini",
+        model: "gemini-test-flash",
+        systemPrompt: "system",
+        turns: [{ role: "user", text: "hi" }],
+      },
+      (delta) => deltas.push(delta)
+    )
+    expect(deltas.join("")).toBe("Hello there")
+    expect(deltas.every((delta) => !delta.includes('"'))).toBe(true)
+    expect(reply.text).toBe('{"message": "Hello there", "phase": "clarifying"}')
+  })
+
+  it("never forwards thought parts to deltas", async () => {
+    sdkState.models = {
+      generateContentStream: vi.fn(async () =>
+        (async function* () {
+          yield geminiChunk([{ text: "thinking…", thought: true }])
+          yield geminiChunk([{ text: '{"message": "Answer"}' }])
+        })()
+      ),
+    }
+    const deltas: string[] = []
+    await streamGoogleConsult(
+      {
+        providerId: "gemini",
+        model: "gemini-test-flash",
+        systemPrompt: "system",
+        turns: [{ role: "user", text: "hi" }],
+      },
+      (delta) => deltas.push(delta)
+    )
+    expect(deltas.join("")).toBe("Answer")
+  })
+
+  it("collects usage metadata and finish reasons from the stream", async () => {
+    sdkState.models = {
+      generateContentStream: vi.fn(async () =>
+        (async function* () {
+          yield geminiChunk([{ text: '{"message": "Hi"}' }])
+          yield {
+            candidates: [{ finishReason: "STOP" }],
+            usageMetadata: {
+              promptTokenCount: 120,
+              candidatesTokenCount: 8,
+              totalTokenCount: 128,
+            },
+          }
+        })()
+      ),
+    }
+    const reply = await streamGoogleConsult({
+      providerId: "gemini",
+      model: "gemini-test-flash",
+      systemPrompt: "system",
+      turns: [{ role: "user", text: "hi" }],
+    })
+    expect(reply.finishReason).toBe("STOP")
+    expect(reply.usage).toMatchObject({
+      promptTokens: 120,
+      outputTokens: 8,
+      totalTokens: 128,
+    })
+  })
+})
+
+describe("generateImagesGoogle", () => {
   const basePayload = {
-    apiKey: "test-key",
-    model: "gemini-2.5-flash-image",
+    providerId: "gemini" as const,
+    model: "gemini-test-image",
     prompt: "test prompt",
     count: 2,
   }
 
-  function geminiResponse(parts: unknown[]): unknown {
-    return {
-      candidates: [{ content: { role: "model", parts } }],
-    }
-  }
-
   it("collects one image per successful call", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify(
-          geminiResponse([
-            { text: "Here is your icon." },
-            { inlineData: { mimeType: "image/png", data: "QUJD" } },
-          ])
-        ),
-        { headers: { "Content-Type": "application/json" } }
-      )
-    )
-    vi.stubGlobal("fetch", fetchMock)
+    sdkState.models = {
+      generateContent: vi.fn(async () =>
+        geminiChunk([
+          { text: "Here is your icon." },
+          { inlineData: { mimeType: "image/png", data: "QUJD" } },
+        ])
+      ),
+    }
     const results = await generateImagesGoogle(basePayload)
     expect(results).toHaveLength(2)
     for (const result of results) {
       expect(result.ok).toBe(true)
       if (result.ok) expect(result.mimeType).toBe("image/png")
     }
-    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it("reports per-call failures without hiding successes", async () => {
     let call = 0
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
+    sdkState.models = {
+      generateContent: vi.fn(async () => {
         call += 1
         if (call === 1) {
-          return new Response(
-            JSON.stringify(
-              geminiResponse([{ inlineData: { mimeType: "image/png", data: "QUJD" } }])
-            ),
-            { headers: { "Content-Type": "application/json" } }
-          )
+          return geminiChunk([{ inlineData: { mimeType: "image/png", data: "QUJD" } }])
         }
-        return new Response(
-          JSON.stringify({ error: { message: "quota exceeded" } }),
-          { status: 429, headers: { "Content-Type": "application/json" } }
-        )
-      })
-    )
+        throw new ApiError({ message: "api error", status: 429 })
+      }),
+    }
     const results = await generateImagesGoogle(basePayload)
     expect(results).toHaveLength(2)
     expect(results[0].ok).toBe(true)
-    expect(results[1]).toEqual({ ok: false, error: "quota exceeded" })
+    expect(results[1]).toEqual({ ok: false, error: "Rate limited by the provider — try again shortly." })
   })
 
   it("surfaces model refusals as errors, not successes", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify(geminiResponse([{ text: "I cannot create that content." }])),
-          { headers: { "Content-Type": "application/json" } }
-        )
-      )
-    )
+    sdkState.models = {
+      generateContent: vi.fn(async () =>
+        geminiChunk([{ text: "I cannot create that content." }])
+      ),
+    }
     const results = await generateImagesGoogle({ ...basePayload, count: 1 })
     expect(results[0]).toEqual({
       ok: false,
       error: "I cannot create that content.",
     })
   })
+})
 
-  it("sends reference images as inlineData parts on every call", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify(geminiResponse([{ inlineData: { mimeType: "image/png", data: "QQ" } }])), {
-        headers: { "Content-Type": "application/json" },
-      })
-    )
-    vi.stubGlobal("fetch", fetchMock)
-    await generateImagesGoogle({
-      ...basePayload,
-      count: 1,
-      referenceImages: [{ mimeType: "image/png", data: "QUJD" }],
-    })
-    const body = JSON.parse(
-      (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body as string
-    )
-    const parts = body.contents[0].parts as Array<Record<string, unknown>>
-    expect(parts.some((part) => "inlineData" in part)).toBe(true)
+describe("assertModelAvailable", () => {
+  it("allows operator-pinned models without discovery", async () => {
+    vi.stubEnv("AESTRY_GEMINI_CHAT_MODEL", "pinned-model")
+    await expect(
+      assertModelAvailable("gemini", "pinned-model", "chat")
+    ).resolves.toBeUndefined()
+  })
+
+  it("rejects models the provider does not expose", async () => {
+    sdkState.models = {
+      list: vi.fn(async () =>
+        (async function* () {
+          yield {
+            name: "models/gemini-test-flash",
+            supportedActions: ["generateContent"],
+          }
+        })()
+      ),
+    }
+    await expect(
+      assertModelAvailable("gemini", "not-a-real-model", "chat")
+    ).rejects.toMatchObject({ status: 400 })
   })
 })

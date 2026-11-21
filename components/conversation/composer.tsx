@@ -269,13 +269,10 @@ function ContextWindowPie({
   onCompact?: () => void
 }) {
   const [open, setOpen] = React.useState(false)
-  const providers = useProviders((state) => state.providers)
   const selection = useProviders((state) => state.selections.consultation)
-  const provider = selection
-    ? providers.find((p) => p.id === selection.providerId)
-    : undefined
+  const modelsCache = useProviders((state) => state.modelsCache)
   const model = selection
-    ? (provider?.models ?? []).find((m) => m.id === selection.model)
+    ? (modelsCache[selection.providerId] ?? []).find((m) => m.id === selection.model)
     : undefined
   const limit = model?.contextWindow
   const used = contextTokens ?? 0

@@ -2,8 +2,10 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 
 import { compileGenerationPrompt } from "@/lib/skills/registry"
-import { generateImagesGoogle } from "@/lib/providers/google"
-import { generateImagesOpenAiCompatible } from "@/lib/providers/openai-compatible"
+import {
+  assertModelAvailable,
+  generateImagesGoogle,
+} from "@/lib/providers/google"
 import { ProviderRequestError } from "@/lib/providers/types"
 import type { GenerationApiResponse } from "@/lib/generation"
 import { requireAccess } from "@/lib/server/access"
@@ -11,8 +13,9 @@ import { readJsonBody, withSlot } from "@/lib/server/limits"
 
 // POST /api/generate — the server compiles the generation prompt from the
 // validated skill + design brief. Caller-supplied compiled prompts are not
-// trusted: skill constraints are enforced here, server-side. Operator-access
-// gated and concurrency bounded: every call is billable inference.
+// trusted: skill constraints are enforced here, server-side. Credentials
+// resolve from the server environment. Operator-access gated and
+// concurrency bounded: every call is billable inference.
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024
 const MAX_CONCURRENT_GENERATIONS = 2
@@ -26,10 +29,8 @@ const referenceImageSchema = z.object({
 })
 
 const bodySchema = z.object({
-  kind: z.enum(["google", "openai-compatible"]),
-  apiKey: z.string().trim().min(1),
+  providerId: z.enum(["gemini", "vertex"]),
   model: z.string().trim().min(1).max(120),
-  baseUrl: z.string().trim().optional(),
   skillId: z.enum(["app-icon", "logo", "og-image"]),
   brief: z.object({
     concept: z.string().min(1),
@@ -43,7 +44,6 @@ const bodySchema = z.object({
     constraints: z.array(z.string()).max(8).nullish(),
   }),
   count: z.number().int().min(1).max(4),
-  size: z.string().trim().max(20).optional(),
   refinement: z.string().trim().max(4_000).optional(),
   referenceImages: z
     .array(referenceImageSchema)
@@ -72,7 +72,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 400 }
     )
   }
-  const { kind, apiKey, model, baseUrl, skillId, brief, count, size, refinement, referenceImages } =
+  const { providerId, model, skillId, brief, count, refinement, referenceImages } =
     parsed.data
 
   let prompt: string
@@ -85,39 +85,30 @@ export async function POST(request: Request): Promise<NextResponse> {
     )
   }
 
+  try {
+    await assertModelAvailable(providerId, model, "image")
+  } catch (error) {
+    if (error instanceof ProviderRequestError) {
+      return NextResponse.json({ error: error.message }, { status: error.status })
+    }
+    return NextResponse.json(
+      { error: "Could not validate the selected model." },
+      { status: 502 }
+    )
+  }
+
   const result = await withSlot("generation", MAX_CONCURRENT_GENERATIONS, async () => {
     try {
-      let results
-      let warning: string | undefined
-      if (kind === "google") {
-        results = await generateImagesGoogle({
-          apiKey,
-          model,
-          prompt,
-          count,
-          referenceImages,
-        })
-      } else {
-        results = await generateImagesOpenAiCompatible({
-          apiKey,
-          model,
-          baseUrl,
-          prompt,
-          count,
-          size,
-        })
-        // The OpenAI-compatible images endpoint accepts text-only prompts;
-        // never pretend references influenced the result.
-        if (referenceImages && referenceImages.length > 0) {
-          warning =
-            "Reference images were not sent: this provider path (images/generations) does not accept image input."
-        }
-      }
-
+      const results = await generateImagesGoogle({
+        providerId,
+        model,
+        prompt,
+        count,
+        referenceImages,
+      })
       const payload: GenerationApiResponse & { prompt: string } = {
         results,
         prompt,
-        ...(warning ? { warning } : {}),
       }
       return NextResponse.json(payload)
     } catch (error) {

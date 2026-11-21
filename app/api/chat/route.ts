@@ -14,22 +14,20 @@ import {
   parseConsultationReply,
 } from "@/lib/conversation/consultation"
 import {
+  assertModelAvailable,
   consultGoogle,
   streamGoogleConsult,
 } from "@/lib/providers/google"
-import {
-  consultOpenAiCompatible,
-  streamOpenAiCompatibleConsult,
-} from "@/lib/providers/openai-compatible"
 import { ProviderRequestError } from "@/lib/providers/types"
 import { requireAccess } from "@/lib/server/access"
 import { readJsonBody, releaseSlot, tryAcquireSlot } from "@/lib/server/limits"
 
 /**
- * POST /api/chat — multimodal consultation through the configured provider.
- * Consultation streams over SSE by default; compaction runs as a single
- * JSON round-trip. The endpoint is operator-access gated and concurrency
- * bounded, because it triggers billable provider inference.
+ * POST /api/chat — multimodal consultation through a configured built-in
+ * provider. Credentials resolve server-side from the environment; the
+ * browser never sends or stores them. Consultation streams over SSE by
+ * default (deltas are server-extracted message text); compaction runs as a
+ * single JSON round-trip. Operator-access gated and concurrency bounded.
  */
 
 const MAX_BODY_BYTES = 48 * 1024 * 1024
@@ -48,7 +46,10 @@ function errorStatus(error: unknown): { status: number; message: string } {
   return { status: 502, message: "Could not reach the provider endpoint." }
 }
 
-function buildConsultStream(input: ChatRequestBody): ReadableStream<Uint8Array> {
+function buildConsultStream(
+  input: ChatRequestBody,
+  systemPrompt: string
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -56,26 +57,21 @@ function buildConsultStream(input: ChatRequestBody): ReadableStream<Uint8Array> 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
       }
       try {
-        const systemPrompt = buildConsultationSystemPrompt(
-          input.skillId,
-          input.brief ?? null,
-          input.projectContext
-        )
-        const adapterPayload = {
-          apiKey: input.apiKey,
-          model: input.model,
-          baseUrl: input.baseUrl,
-          systemPrompt,
-          turns: input.history,
-          referenceImages: input.referenceImages,
-        }
+        const requestId = crypto.randomUUID()
         const onDelta = (text: string) => {
           send({ type: "delta", text })
         }
-        const reply =
-          input.kind === "google"
-            ? await streamGoogleConsult(adapterPayload, onDelta)
-            : await streamOpenAiCompatibleConsult(adapterPayload, onDelta)
+        const reply = await streamGoogleConsult(
+          {
+            providerId: input.providerId,
+            model: input.model,
+            systemPrompt,
+            turns: input.history,
+            referenceImages: input.referenceImages,
+            requestId,
+          },
+          onDelta
+        )
 
         if (typeof reply.usage?.promptTokens === "number") {
           send({ type: "usage", usage: reply.usage })
@@ -112,19 +108,7 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid consultation request." }, { status: 400 })
   }
-  const {
-    kind,
-    apiKey,
-    model,
-    baseUrl,
-    skillId,
-    brief,
-    history,
-    referenceImages,
-    projectContext,
-    mode,
-    stream,
-  } = parsed.data
+  const input = parsed.data
 
   if (!tryAcquireSlot("provider-ops", MAX_CONCURRENT_PROVIDER_OPS)) {
     return NextResponse.json(
@@ -134,10 +118,23 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
   }
 
   try {
+    const systemPrompt =
+      input.mode === "compact"
+        ? buildCompactionSystemPrompt()
+        : buildConsultationSystemPrompt(
+            input.skillId,
+            input.brief ?? null,
+            input.projectContext
+          )
+
+    // The chosen model must actually exist on the configured provider —
+    // availability is validated server-side, never silently rerouted.
+    await assertModelAvailable(input.providerId, input.model, "chat")
+
     // Compaction is a single JSON round-trip; consultation streams.
-    if (mode === "consult" && stream) {
+    if (input.mode === "consult" && input.stream) {
       // The stream owns the concurrency slot and releases it on completion.
-      return new Response(buildConsultStream(parsed.data), {
+      return new Response(buildConsultStream(input, systemPrompt), {
         headers: {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
@@ -146,27 +143,14 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
       })
     }
 
-    const systemPrompt =
-      mode === "compact"
-        ? buildCompactionSystemPrompt()
-        : buildConsultationSystemPrompt(
-            skillId,
-            brief ?? null,
-            projectContext
-          )
-
-    const adapterPayload = {
-      apiKey,
-      model,
-      baseUrl,
+    const reply = await consultGoogle({
+      providerId: input.providerId,
+      model: input.model,
       systemPrompt,
-      turns: history,
-      referenceImages: mode === "consult" ? referenceImages : undefined,
-    }
-    const reply =
-      kind === "google"
-        ? await consultGoogle(adapterPayload)
-        : await consultOpenAiCompatible(adapterPayload)
+      turns: input.history,
+      referenceImages:
+        input.mode === "consult" ? input.referenceImages : undefined,
+    })
 
     const payload: ChatApiResponse = {}
     if (typeof reply.usage?.promptTokens === "number") {
@@ -176,7 +160,7 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
       payload.warning = reply.warning
     }
 
-    if (mode === "compact") {
+    if (input.mode === "compact") {
       const compaction = parseCompactionReply(reply.text)
       if (!compaction) {
         return NextResponse.json(

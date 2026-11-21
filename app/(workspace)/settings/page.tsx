@@ -80,11 +80,11 @@ export default function SettingsPage() {
       <Separator />
       <SettingsSection
         title="AI providers"
-        description="Aestry uses bring-your-own-key access to image generation providers. Keys are stored locally in this browser."
+        description="Provider credentials live in the server environment and never reach the browser. Verify connections and choose role models on the providers page."
       >
         <UnavailablePanel icon={<KeyRoundIcon />} title="Manage your providers">
-          Add the built-in Google Gemini integration or any OpenAI-compatible
-          endpoint on the providers page.
+          The built-in Google Gemini Developer API and Google Vertex AI
+          integrations are configured through the server environment.
           <Button
             variant="outline"
             size="sm"
@@ -101,10 +101,11 @@ export default function SettingsPage() {
         title="Data &amp; storage"
         description="Aestry is designed to be local-first and self-hostable."
       >
-        <UnavailablePanel icon={<HardDriveIcon />} title="Local storage in progress">
-          Provider settings are stored in this browser. Generated assets are
-          not persisted yet — local history arrives with the generation
-          pipeline.
+        <UnavailablePanel icon={<HardDriveIcon />} title="Local-first storage">
+          Conversations, reference images, and generated assets are stored in
+          this browser (IndexedDB). Generated images remain in your asset
+          library even if their conversation is deleted. Server-side
+          database persistence is planned.
         </UnavailablePanel>
       </SettingsSection>
     </div>

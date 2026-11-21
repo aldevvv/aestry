@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { extractPartialMessage } from "./streaming"
+import { extractPartialMessage } from "./partial-json"
 
 describe("extractPartialMessage", () => {
   it("returns null before the message key starts", () => {

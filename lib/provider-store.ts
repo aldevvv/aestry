@@ -3,7 +3,8 @@ import { createJSONStorage, persist } from "zustand/middleware"
 import { z } from "zod"
 
 import {
-  type ProviderKind,
+  GOOGLE_PROVIDER_LABEL,
+  type ModelCapability,
   type ProviderModel,
 } from "@/lib/providers/models"
 
@@ -11,182 +12,426 @@ import {
 // them without importing client state. Re-exported here for UI consumers.
 export {
   GOOGLE_PROVIDER_LABEL,
-  PROVIDER_KIND_LABELS,
-  inferCapabilities,
   type ModelCapability,
-  type ProviderKind,
   type ProviderModel,
 } from "@/lib/providers/models"
 
-export type ProviderConfig = {
-  id: string
-  kind: ProviderKind
+/**
+ * Built-in first-party providers. The browser only ever sees these static
+ * descriptors plus sanitized statuses fetched from the server — provider
+ * credentials resolve exclusively server-side.
+ */
+export type BuiltinProviderId = "gemini" | "vertex"
+
+export const BUILTIN_PROVIDERS: Array<{
+  id: BuiltinProviderId
   label: string
-  /** Endpoint root for OpenAI-compatible providers, e.g. https://host/v1. */
-  baseUrl?: string
-  apiKey: string
-  /** Multimodal model: brainstorming, chat, reading reference images. */
-  multimodalModel?: string
-  /** Image generation model: produces the assets. */
-  imageModel?: string
-  /** Models the key can access, as reported by the provider. */
-  models?: ProviderModel[]
-  createdAt: string
+}> = [
+  { id: "gemini", label: GOOGLE_PROVIDER_LABEL },
+  { id: "vertex", label: "Google Vertex AI" },
+]
+
+export function providerLabel(providerId: BuiltinProviderId): string {
+  return (
+    BUILTIN_PROVIDERS.find((provider) => provider.id === providerId)?.label ??
+    providerId
+  )
+}
+
+/** Sanitized provider status as served by GET /api/providers. */
+export type ProviderStatus = {
+  id: BuiltinProviderId
+  label: string
+  connectionMode: "api-key" | "application-default-credentials"
+  configured: boolean
+  configDetail: string[]
+  setupHint: string
+  chatModelOverride?: string
+  imageModelOverride?: string
+}
+
+export type RoleSelection = {
+  providerId: BuiltinProviderId
+  model: string
 }
 
 export type ProviderRole = "consultation" | "generation"
 
-export type RoleSelection = {
-  providerId: string
-  model: string
+export function isBuiltinProviderId(value: string): value is BuiltinProviderId {
+  return value === "gemini" || value === "vertex"
 }
 
-export const googleFormSchema = z.object({
-  apiKey: z.string().trim().min(1, "A Gemini API key is required"),
+/** Kept for the model-id inputs' client-side validation shape. */
+export const modelFormSchema = z.object({
+  model: z.string().trim().min(1).max(120),
 })
-
-export const openAiCompatibleFormSchema = z.object({
-  label: z
-    .string()
-    .trim()
-    .min(1, "Give the provider a name")
-    .max(60, "Keep the name under 60 characters"),
-  baseUrl: z
-    .string()
-    .trim()
-    .min(1, "A base URL is required")
-    .url("Enter a full URL, e.g. https://api.example.com/v1")
-    .refine(
-      (value) => value.startsWith("http://") || value.startsWith("https://"),
-      "Only http and https endpoints are supported"
-    ),
-  apiKey: z.string().trim().min(1, "An API key is required"),
-})
-
-export function collectFieldErrors(
-  error: z.ZodError
-): Record<string, string> {
-  const fieldErrors: Record<string, string> = {}
-  for (const issue of error.issues) {
-    const key = issue.path[0]
-    if (typeof key === "string" && !(key in fieldErrors)) {
-      fieldErrors[key] = issue.message
-    }
-  }
-  return fieldErrors
-}
-
-export function maskApiKey(apiKey: string): string {
-  const tail = apiKey.slice(-4)
-  return `•••• ${tail}`
-}
-
-/**
- * Non-local HTTP endpoints transport the API key unencrypted; used for a
- * client-side caution without blocking self-hosted setups on trusted
- * networks. The server-side outbound policy makes the final call.
- */
-export function isInsecureEndpoint(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl)
-    if (url.protocol !== "http:") return false
-    const host = url.hostname.toLowerCase()
-    return (
-      host !== "localhost" &&
-      host !== "127.0.0.1" &&
-      host !== "[::1]" &&
-      host !== "::1"
-    )
-  } catch {
-    return false
-  }
-}
 
 type ProvidersState = {
-  providers: ProviderConfig[]
+  /** Discovered models per provider, cached from the server (non-secret). */
+  modelsCache: Partial<Record<BuiltinProviderId, ProviderModel[]>>
   /**
-   * Explicit role selections. Deliberately null by default: no provider is
+   * Explicit role selections. Deliberately null by default: nothing is
    * activated implicitly, because doing so could silently spend credits on
-   * an endpoint the user did not choose for that role.
+   * a provider the user did not choose for that role.
    */
   selections: {
     consultation: RoleSelection | null
     generation: RoleSelection | null
   }
-  addProvider: (provider: ProviderConfig) => void
-  removeProvider: (id: string) => void
-  setSelection: (role: ProviderRole, selection: RoleSelection | null) => void
+  /** Set when the v4 migration stripped browser-stored API keys. */
+  legacyCredentialsRemoved: boolean
+
+  // Session state (not persisted).
+  statuses: ProviderStatus[] | null
+  statusError: string | null
+  configErrors: string[]
+  loadingModels: Partial<Record<BuiltinProviderId, boolean>>
+  modelErrors: Partial<Record<BuiltinProviderId, string>>
+  verifying: Partial<Record<BuiltinProviderId, boolean>>
+  verification: Partial<
+    Record<BuiltinProviderId, { verified: boolean; at: number; error?: string }>
+  >
+
+  refreshStatus: () => Promise<void>
+  loadModels: (providerId: BuiltinProviderId) => Promise<void>
+  verifyProvider: (providerId: BuiltinProviderId) => Promise<void>
+  setSelection: (role: "consultation" | "generation", selection: RoleSelection | null) => void
+  acknowledgeLegacyNotice: () => void
 }
 
-/**
- * Provider credentials live in this browser only (localStorage via zustand
- * persist). They travel through the self-hosted Aestry server to the
- * configured provider on each proxied operation, and a removal deletes the
- * key outright.
- */
+let statusInFlight: Promise<void> | null = null
+
 export const useProviders = create<ProvidersState>()(
   persist(
-    (set) => ({
-      providers: [],
+    (set, get) => ({
+      modelsCache: {},
       selections: { consultation: null, generation: null },
-      addProvider: (provider) =>
-        set((state) => ({ providers: [...state.providers, provider] })),
-      removeProvider: (id) =>
-        set((state) => {
-          const selections = { ...state.selections }
-          if (selections.consultation?.providerId === id) {
-            selections.consultation = null
+      legacyCredentialsRemoved: false,
+
+      statuses: null,
+      statusError: null,
+      configErrors: [],
+      loadingModels: {},
+      modelErrors: {},
+      verifying: {},
+      verification: {},
+
+      refreshStatus: async () => {
+        if (statusInFlight) return statusInFlight
+        statusInFlight = (async () => {
+          try {
+            const response = await fetch("/api/providers", { cache: "no-store" })
+            const data: unknown = await response.json().catch(() => null)
+            if (
+              data &&
+              typeof data === "object" &&
+              Array.isArray((data as { providers?: unknown }).providers)
+            ) {
+              const record = data as {
+                providers: ProviderStatus[]
+                configErrors?: unknown
+              }
+              set({
+                statuses: record.providers,
+                statusError: null,
+                configErrors: Array.isArray(record.configErrors)
+                  ? record.configErrors.filter(
+                      (entry): entry is string => typeof entry === "string"
+                    )
+                  : [],
+              })
+              // Operator-pinned models (AESTRY_*_MODEL) are explicit server
+              // configuration, not an implicit choice: preselect them for
+              // roles the user has not decided on yet.
+              const pinned = (provider: ProviderStatus, role: "chat" | "image") =>
+                role === "chat"
+                  ? provider.chatModelOverride
+                  : provider.imageModelOverride
+              const configuredChat = record.providers.find(
+                (provider) => provider.configured && pinned(provider, "chat")
+              )
+              const configuredImage = record.providers.find(
+                (provider) => provider.configured && pinned(provider, "image")
+              )
+              set((state) => ({
+                selections: {
+                  consultation:
+                    state.selections.consultation ??
+                    (configuredChat?.chatModelOverride
+                      ? {
+                          providerId: configuredChat.id,
+                          model: configuredChat.chatModelOverride,
+                        }
+                      : null),
+                  generation:
+                    state.selections.generation ??
+                    (configuredImage?.imageModelOverride
+                      ? {
+                          providerId: configuredImage.id,
+                          model: configuredImage.imageModelOverride,
+                        }
+                      : null),
+                },
+              }))
+            } else {
+              set({
+                statusError:
+                  response.status === 401
+                    ? "Operator sign-in required to read provider status."
+                    : "Provider status could not be read from the server.",
+              })
+            }
+          } catch {
+            set({
+              statusError: "Could not reach the Aestry server for provider status.",
+            })
+          } finally {
+            statusInFlight = null
           }
-          if (selections.generation?.providerId === id) {
-            selections.generation = null
+        })()
+        return statusInFlight
+      },
+
+      loadModels: async (providerId) => {
+        if (get().loadingModels[providerId]) return
+        set((state) => ({
+          loadingModels: { ...state.loadingModels, [providerId]: true },
+          modelErrors: { ...state.modelErrors, [providerId]: undefined },
+        }))
+        try {
+          const response = await fetch("/api/providers/models", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerId }),
+          })
+          const data: unknown = await response.json().catch(() => null)
+          if (!response.ok) {
+            const error =
+              data &&
+              typeof data === "object" &&
+              typeof (data as { error?: unknown }).error === "string"
+                ? (data as { error: string }).error
+                : "Could not load models."
+            set((state) => ({
+              modelErrors: { ...state.modelErrors, [providerId]: error },
+            }))
+            return
           }
-          return {
-            providers: state.providers.filter(
-              (provider) => provider.id !== id
-            ),
-            selections,
+          if (
+            !data ||
+            typeof data !== "object" ||
+            !Array.isArray((data as { models?: unknown }).models)
+          ) {
+            set((state) => ({
+              modelErrors: {
+                ...state.modelErrors,
+                [providerId]: "The provider response could not be read.",
+              },
+            }))
+            return
           }
-        }),
+          const models: ProviderModel[] = []
+          for (const item of (data as { models: unknown[] }).models) {
+            if (
+              item &&
+              typeof item === "object" &&
+              typeof (item as { id?: unknown }).id === "string" &&
+              ((item as { capability?: unknown }).capability === "multimodal" ||
+                (item as { capability?: unknown }).capability === "image")
+            ) {
+              const record = item as {
+                id: string
+                capability: ModelCapability
+                label?: unknown
+                contextWindow?: unknown
+              }
+              models.push({
+                id: record.id,
+                capability: record.capability,
+                label:
+                  typeof record.label === "string" ? record.label : undefined,
+                contextWindow:
+                  typeof record.contextWindow === "number"
+                    ? record.contextWindow
+                    : undefined,
+              })
+            }
+          }
+          set((state) => ({
+            modelsCache: { ...state.modelsCache, [providerId]: models },
+          }))
+        } catch {
+          set((state) => ({
+            modelErrors: {
+              ...state.modelErrors,
+              [providerId]: "Could not reach the Aestry server.",
+            },
+          }))
+        } finally {
+          set((state) => ({
+            loadingModels: { ...state.loadingModels, [providerId]: false },
+          }))
+        }
+      },
+
+      verifyProvider: async (providerId) => {
+        if (get().verifying[providerId]) return
+        set((state) => ({
+          verifying: { ...state.verifying, [providerId]: true },
+        }))
+        try {
+          const response = await fetch("/api/providers/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ providerId }),
+          })
+          const data: unknown = await response.json().catch(() => null)
+          const verified =
+            data &&
+            typeof data === "object" &&
+            (data as { verified?: unknown }).verified === true
+          const error =
+            data &&
+            typeof data === "object" &&
+            typeof (data as { error?: unknown }).error === "string"
+              ? (data as { error: string }).error
+              : undefined
+          set((state) => ({
+            verification: {
+              ...state.verification,
+              [providerId]: {
+                verified: verified === true,
+                at: Date.now(),
+                error,
+              },
+            },
+          }))
+          // A verified connection implies a working discovery path — prime
+          // the model cache while we are here.
+          if (verified === true) {
+            void get().loadModels(providerId)
+          }
+        } catch {
+          set((state) => ({
+            verification: {
+              ...state.verification,
+              [providerId]: {
+                verified: false,
+                at: Date.now(),
+                error: "Could not reach the Aestry server.",
+              },
+            },
+          }))
+        } finally {
+          set((state) => ({
+            verifying: { ...state.verifying, [providerId]: false },
+          }))
+        }
+      },
+
       setSelection: (role, selection) =>
         set((state) => ({
           selections: { ...state.selections, [role]: selection },
         })),
+
+      acknowledgeLegacyNotice: () =>
+        set({ legacyCredentialsRemoved: false }),
     }),
     {
       name: "aestry.providers.v1",
-      version: 3,
+      version: 4,
       storage: createJSONStorage(() => localStorage),
-      migrate: (persisted, version) => {
-        if (version >= 3) return persisted as ProvidersState
-        const legacy = persisted as {
-          providers?: Array<Record<string, unknown>>
-        }
-        return {
-          providers: (legacy.providers ?? []).map((provider) => {
-            const { model, ...rest } = provider
-            return {
-              ...rest,
-              imageModel: typeof model === "string" ? model : undefined,
-              // v1 model lists were plain ids; drop them so the record is
-              // repopulated through discovery.
-              models: undefined,
-            } as ProviderConfig
-          }),
-          // v2 and earlier had no explicit role selections.
-          selections: { consultation: null, generation: null },
-        }
-      },
+      partialize: (state) => ({
+        modelsCache: state.modelsCache,
+        selections: state.selections,
+        legacyCredentialsRemoved: state.legacyCredentialsRemoved,
+      }),
+      migrate: migratePersistedProviders,
     }
   )
 )
 
-/** Resolves a role selection against the current provider list. */
-export function resolveSelection(
-  providers: ProviderConfig[],
-  selection: RoleSelection | null
-): { provider: ProviderConfig; model: string } | null {
-  if (!selection) return null
-  const provider = providers.find((p) => p.id === selection.providerId)
-  if (!provider) return null
-  return { provider, model: selection.model }
+type PersistedProviders = {
+  modelsCache: Partial<Record<BuiltinProviderId, ProviderModel[]>>
+  selections: {
+    consultation: RoleSelection | null
+    generation: RoleSelection | null
+  }
+  legacyCredentialsRemoved: boolean
+}
+
+/**
+ * Persisted-state migration. v3 and earlier held browser-stored provider
+ * credentials: they are no longer read for any operation, and dropping the
+ * records here is the safe cleanup — nothing is transmitted anywhere
+ * first. Model preferences from Google-provider selections carry over;
+ * non-Google selections are dropped rather than rerouted to another
+ * billable provider.
+ */
+export function migratePersistedProviders(
+  persisted: unknown,
+  version: number
+): Partial<ProvidersState> {
+  const base: PersistedProviders = {
+    modelsCache: {},
+    selections: { consultation: null, generation: null },
+    legacyCredentialsRemoved: false,
+  }
+  if (version >= 4) return persisted as Partial<ProvidersState>
+  const legacy = persisted as {
+    providers?: Array<{
+      id?: unknown
+      kind?: string
+      apiKey?: string
+    }>
+    selections?: {
+      consultation?: { providerId: string; model: string } | null
+      generation?: { providerId: string; model: string } | null
+    }
+  }
+  const hadCredentials = (legacy.providers ?? []).some(
+    (provider) => typeof provider.apiKey === "string" && provider.apiKey.length > 0
+  )
+  const legacySelection = (
+    selection: { providerId: string; model: string } | null | undefined
+  ): RoleSelection | null => {
+    if (!selection) return null
+    const provider = (legacy.providers ?? []).find(
+      (candidate) =>
+        typeof candidate?.id === "string" && candidate.id === selection.providerId
+    )
+    // Only Google selections map onto the built-in registry.
+    if (!provider || provider.kind !== "google") return null
+    return { providerId: "gemini", model: selection.model }
+  }
+  return {
+    ...base,
+    legacyCredentialsRemoved: hadCredentials,
+    selections: {
+      consultation: legacySelection(legacy.selections?.consultation),
+      generation: legacySelection(legacy.selections?.generation),
+    },
+  }
+}
+
+/** Resolves the current selection for a role (validated shapes only). */
+export function selectRoleSelection(
+  state: ProvidersState,
+  role: "consultation" | "generation"
+): RoleSelection | null {
+  return state.selections[role]
+}
+
+/**
+ * The selected model's context window when discovery metadata is available.
+ * Returns undefined rather than inventing a limit.
+ */
+export function selectedModelContextWindow(
+  state: ProvidersState,
+  role: "consultation" | "generation"
+): number | undefined {
+  const selection = state.selections[role]
+  if (!selection) return undefined
+  const models = state.modelsCache[selection.providerId] ?? []
+  return models.find((model) => model.id === selection.model)?.contextWindow
 }

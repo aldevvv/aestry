@@ -11,17 +11,16 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  resolveSelection,
+  BUILTIN_PROVIDERS,
   useProviders,
   type ModelCapability,
-  type ProviderModel,
   type ProviderRole,
 } from "@/lib/provider-store"
 
 /**
- * Explicit role selector over every provider's discovered models. Used on
- * the Providers page (full form context) and inside the conversation
- * composer (quick switching). Nothing is selected implicitly.
+ * Explicit role selector over the built-in providers' discovered models.
+ * Used on the Providers page (full form context) and inside the
+ * conversation composer (quick switching). Nothing is selected implicitly.
  */
 export function ModelRoleSelect({
   role,
@@ -32,25 +31,37 @@ export function ModelRoleSelect({
   capability: ModelCapability
   label: string
 }) {
-  const providers = useProviders((state) => state.providers)
+  const statuses = useProviders((state) => state.statuses)
+  const modelsCache = useProviders((state) => state.modelsCache)
   const selection = useProviders((state) => state.selections[role])
   const setSelection = useProviders((state) => state.setSelection)
+  const refreshStatus = useProviders((state) => state.refreshStatus)
   const selectId = `model-role-${role}`
 
-  const options = providers.flatMap((provider) =>
-    (provider.models ?? [])
-      .filter((model: ProviderModel) => model.capability === capability)
+  React.useEffect(() => {
+    if (statuses === null) {
+      void refreshStatus()
+    }
+  }, [statuses, refreshStatus])
+
+  const configuredIds = new Set(
+    (statuses ?? []).filter((entry) => entry.configured).map((entry) => entry.id)
+  )
+  const options = BUILTIN_PROVIDERS.filter((provider) =>
+    configuredIds.has(provider.id)
+  ).flatMap((provider) =>
+    (modelsCache[provider.id] ?? [])
+      .filter((model) => model.capability === capability)
       .map((model) => ({
         value: `${provider.id}::${model.id}`,
         label: `${provider.label} · ${model.id}`,
       }))
   )
 
-  const resolved = resolveSelection(providers, selection)
-  const currentValue = resolved
-    ? `${resolved.provider.id}::${resolved.model}`
+  const currentValue = selection
+    ? `${selection.providerId}::${selection.model}`
     : null
-  const stale = Boolean(selection) && !resolved
+  const stale = Boolean(selection) && !options.some((o) => o.value === currentValue)
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -63,7 +74,10 @@ export function ModelRoleSelect({
             const separator = value.indexOf("::")
             const providerId = value.slice(0, separator)
             const model = value.slice(separator + 2)
-            setSelection(role, { providerId, model })
+            setSelection(role, {
+              providerId: providerId as "gemini" | "vertex",
+              model,
+            })
           }}
         >
           <SelectTrigger size="sm" className="w-full" id={selectId}>
@@ -77,9 +91,13 @@ export function ModelRoleSelect({
             ))}
           </SelectContent>
         </Select>
+      ) : configuredIds.size > 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Load models for a configured provider on the Providers page first.
+        </p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Load models for a provider first.
+          Configure a provider on the Providers page first.
         </p>
       )}
       {stale ? (
