@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import Image from "next/image"
 import { toast } from "sonner"
 import {
   EyeIcon,
@@ -45,49 +46,52 @@ import {
   maskApiKey,
   openAiCompatibleFormSchema,
   useProviders,
+  type ModelCapability,
   type ProviderConfig,
   type ProviderKind,
+  type ProviderModel,
 } from "@/lib/provider-store"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
-type FetchedModel = { id: string; label?: string }
-
 type ModelState = {
-  models: FetchedModel[]
-  selected: string
-  manual: string
+  models: ProviderModel[]
+  multimodal: string
+  image: string
+  multimodalManual: string
+  imageManual: string
   loading: boolean
   error: string | null
 }
 
 const idleModelState: ModelState = {
   models: [],
-  selected: "",
-  manual: "",
+  multimodal: "",
+  image: "",
+  multimodalManual: "",
+  imageManual: "",
   loading: false,
   error: null,
 }
 
-function modelDisplayLabel(models: FetchedModel[], id: string): string {
+function modelLabel(models: ProviderModel[], id: string): string {
   const model = models.find((item) => item.id === id)
-  return model && model.label && model.label !== model.id
-    ? `${model.label} · ${model.id}`
-    : id
+  return model?.label ?? id
 }
 
 /**
- * Asks the Aestry server to list the models an API key can access, so the
- * picker never shows hardcoded guesses. The key travels only to this
- * self-hosted server and straight on to the provider endpoint.
+ * Asks the Aestry server to list the models an API key can access, bucketed
+ * into multimodal (chat, brainstorming, reference images) and image
+ * generation. The key travels only to this self-hosted server and straight
+ * on to the provider endpoint.
  */
 async function requestModels(payload: {
   kind: ProviderKind
   apiKey: string
   baseUrl?: string
-}): Promise<{ models: FetchedModel[] } | { error: string }> {
+}): Promise<{ models: ProviderModel[] } | { error: string }> {
   try {
     const response = await fetch("/api/providers/models", {
       method: "POST",
@@ -106,11 +110,16 @@ async function requestModels(payload: {
     if (!isRecord(data) || !Array.isArray(data.models)) {
       return { error: "The provider response could not be read." }
     }
-    const models: FetchedModel[] = []
+    const models: ProviderModel[] = []
     for (const item of data.models) {
-      if (isRecord(item) && typeof item.id === "string") {
+      if (
+        isRecord(item) &&
+        typeof item.id === "string" &&
+        (item.capability === "multimodal" || item.capability === "image")
+      ) {
         models.push({
           id: item.id,
+          capability: item.capability,
           label: typeof item.label === "string" ? item.label : undefined,
         })
       }
@@ -202,50 +211,98 @@ function FormField({
   )
 }
 
-function ModelSelector({
+function CapabilitySelector({
   id,
+  capability,
+  providerKind,
   models,
   value,
   onChange,
 }: {
   id: string
-  models: FetchedModel[]
+  capability: ModelCapability
+  providerKind: ProviderKind
+  models: ProviderModel[]
   value: string
   onChange: (id: string) => void
 }) {
+  const options = models.filter((model) => model.capability === capability)
+  const label =
+    capability === "multimodal" ? "Multimodal model" : "Image generation model"
+  const hint =
+    capability === "multimodal"
+      ? "For brainstorming, chatting, and reading reference images."
+      : "For generating app icons, logos, and OG images."
+
   return (
-    <FormField
-      label="Image model"
-      htmlFor={id}
-      hint={`${models.length.toString()} models available for this key.`}
-    >
-      <Select
-        value={value || null}
-        onValueChange={(value) => {
-          if (typeof value === "string") {
-            onChange(value)
-          }
-        }}
-      >
-        <SelectTrigger size="sm" className="w-full" aria-label="Image model">
-          <SelectValue>
-            {(value) =>
-              typeof value === "string" && value
-                ? modelDisplayLabel(models, value)
-                : "Choose a model"
+    <FormField label={label} htmlFor={id} hint={hint}>
+      {options.length > 0 ? (
+        <Select
+          value={value || null}
+          onValueChange={(value) => {
+            if (typeof value === "string") {
+              onChange(value)
             }
-          </SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {models.map((model) => (
-            <SelectItem key={model.id} value={model.id}>
-              {model.label && model.label !== model.id
-                ? `${model.label} · ${model.id}`
-                : model.id}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+          }}
+        >
+          <SelectTrigger size="sm" className="w-full" aria-label={label}>
+            <SelectValue>
+              {(selected) =>
+                typeof selected === "string" && selected
+                  ? modelLabel(models, selected)
+                  : "Choose a model"
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((model) => (
+              <SelectItem key={model.id} value={model.id}>
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="flex items-center gap-1.5">
+                    {providerKind === "google" ? (
+                      <Image
+                        src="/images/Gemini.svg"
+                        alt=""
+                        width={16}
+                        height={16}
+                        unoptimized
+                        className="size-4 shrink-0"
+                      />
+                    ) : null}
+                    <span className="truncate">
+                      {model.label && model.label !== model.id
+                        ? model.label
+                        : model.id}
+                    </span>
+                  </span>
+                  <span className="truncate text-xs text-muted-foreground">
+                    {model.id}
+                  </span>
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      ) : (
+        <>
+          <Input
+            id={`${id}-manual`}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={
+              capability === "multimodal"
+                ? "Multimodal model id, e.g. gemini-2.5-flash"
+                : "Image model id, e.g. gemini-2.5-flash-image"
+            }
+            autoComplete="off"
+            aria-label={`${label} (manual)`}
+          />
+          <p className="text-xs text-muted-foreground">
+            No {capability === "multimodal" ? "multimodal" : "image generation"}{" "}
+            models were reported for this key — enter the model id manually.
+          </p>
+        </>
+      )}
     </FormField>
   )
 }
@@ -257,14 +314,6 @@ function ProviderRow({
   provider: ProviderConfig
   onRemove: () => void
 }) {
-  const meta = [
-    provider.baseUrl,
-    provider.model,
-    `Key ${maskApiKey(provider.apiKey)}`,
-  ]
-    .filter(Boolean)
-    .join(" · ")
-
   return (
     <div className="flex items-start gap-3 rounded-xl border border-border bg-card p-3">
       <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0">
@@ -279,7 +328,21 @@ function ProviderRow({
             {PROVIDER_KIND_LABELS[provider.kind]}
           </Badge>
         </div>
-        <p className="mt-1 truncate text-xs text-muted-foreground">{meta}</p>
+        <div className="mt-1 flex flex-col gap-0.5 text-xs text-muted-foreground">
+          {provider.imageModel ? (
+            <p className="truncate">Image · {provider.imageModel}</p>
+          ) : null}
+          {provider.multimodalModel ? (
+            <p className="truncate">
+              Multimodal · {provider.multimodalModel}
+            </p>
+          ) : null}
+          <p className="truncate">
+            {[provider.baseUrl, `Key ${maskApiKey(provider.apiKey)}`]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
       </div>
       <AlertDialog>
         <AlertDialogTrigger
@@ -341,8 +404,15 @@ function AddProviderForm() {
   const isProviderKind = (value: string): value is ProviderKind =>
     value === "google" || value === "openai-compatible"
 
-  const customModelValue =
-    customModelState.selected || customModelState.manual.trim()
+  const googleMultimodal =
+    googleModelState.multimodal || googleModelState.multimodalManual.trim()
+  const googleImage = googleModelState.image || googleModelState.imageManual.trim()
+  const googleReady = Boolean(googleMultimodal && googleImage)
+
+  const customMultimodal =
+    customModelState.multimodal || customModelState.multimodalManual.trim()
+  const customImage = customModelState.image || customModelState.imageManual.trim()
+  const customReady = Boolean(customMultimodal && customImage)
 
   const loadGoogleModels = async () => {
     setGoogleModelState({ ...idleModelState, loading: true })
@@ -378,14 +448,17 @@ function AddProviderForm() {
       setErrors(collectFieldErrors(result.error))
       return
     }
-    if (!googleModelState.selected) return
+    if (!googleReady) return
     addProvider({
       id: crypto.randomUUID(),
       kind: "google",
       label: GOOGLE_PROVIDER_LABEL,
       apiKey: result.data.apiKey,
-      model: googleModelState.selected,
-      models: googleModelState.models.map((model) => model.id),
+      multimodalModel: googleMultimodal,
+      imageModel: googleImage,
+      models: googleModelState.models.length
+        ? googleModelState.models
+        : undefined,
       createdAt: new Date().toISOString(),
     })
     toast.success("Google Gemini saved in this browser")
@@ -405,18 +478,18 @@ function AddProviderForm() {
       setErrors(collectFieldErrors(result.error))
       return
     }
-    if (!customModelValue) return
+    if (!customReady) return
     addProvider({
       id: crypto.randomUUID(),
       kind: "openai-compatible",
       label: result.data.label,
       baseUrl: result.data.baseUrl.replace(/\/+$/, ""),
       apiKey: result.data.apiKey,
-      model: customModelValue,
-      models:
-        customModelState.models.length > 0
-          ? customModelState.models.map((model) => model.id)
-          : undefined,
+      multimodalModel: customMultimodal,
+      imageModel: customImage,
+      models: customModelState.models.length
+        ? customModelState.models
+        : undefined,
       createdAt: new Date().toISOString(),
     })
     toast.success(`${result.data.label} saved in this browser`)
@@ -486,7 +559,7 @@ function AddProviderForm() {
                   "Load models"
                 )}
               </Button>
-              <Button type="submit" disabled={!googleModelState.selected}>
+              <Button type="submit" disabled={!googleReady}>
                 Add Google Gemini
               </Button>
             </div>
@@ -496,18 +569,35 @@ function AddProviderForm() {
               </p>
             ) : null}
             {googleModelState.models.length > 0 ? (
-              <ModelSelector
-                id="google-model"
-                models={googleModelState.models}
-                value={googleModelState.selected}
-                onChange={(id) =>
-                  setGoogleModelState((state) => ({ ...state, selected: id }))
-                }
-              />
+              <div className="flex flex-col gap-4">
+                <CapabilitySelector
+                  id="google-multimodal"
+                  capability="multimodal"
+                  providerKind="google"
+                  models={googleModelState.models}
+                  value={googleModelState.multimodal}
+                  onChange={(id) =>
+                    setGoogleModelState((state) => ({
+                      ...state,
+                      multimodal: id,
+                    }))
+                  }
+                />
+                <CapabilitySelector
+                  id="google-image"
+                  capability="image"
+                  providerKind="google"
+                  models={googleModelState.models}
+                  value={googleModelState.image}
+                  onChange={(id) =>
+                    setGoogleModelState((state) => ({ ...state, image: id }))
+                  }
+                />
+              </div>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Load models to verify the key and pick one from what it can
-                actually access.
+                Load models to verify the key and pick a multimodal and an
+                image generation model from what it can actually access.
               </p>
             )}
             <p className="text-xs text-muted-foreground">
@@ -607,7 +697,7 @@ function AddProviderForm() {
                 "Load models"
               )}
             </Button>
-            <Button type="submit" disabled={!customModelValue}>
+            <Button type="submit" disabled={!customReady}>
               Add provider
             </Button>
           </div>
@@ -617,33 +707,60 @@ function AddProviderForm() {
             </p>
           ) : null}
           {customModelState.models.length > 0 ? (
-            <ModelSelector
-              id="custom-model"
-              models={customModelState.models}
-              value={customModelState.selected}
-              onChange={(id) =>
-                setCustomModelState((state) => ({ ...state, selected: id }))
-              }
-            />
-          ) : customModelState.error ? (
-            <FormField
-              label="Model id (manual)"
-              htmlFor="custom-model-manual"
-              hint="The endpoint does not offer a model list — enter the model id yourself."
-            >
-              <Input
-                id="custom-model-manual"
-                value={customModelState.manual}
-                onChange={(event) =>
+            <div className="flex flex-col gap-4">
+              <CapabilitySelector
+                id="custom-multimodal"
+                capability="multimodal"
+                providerKind="openai-compatible"
+                models={customModelState.models}
+                value={customModelState.multimodal}
+                onChange={(id) =>
                   setCustomModelState((state) => ({
                     ...state,
-                    manual: event.target.value,
+                    multimodal: id,
                   }))
                 }
-                placeholder="e.g. gpt-image-1"
-                autoComplete="off"
               />
-            </FormField>
+              <CapabilitySelector
+                id="custom-image"
+                capability="image"
+                providerKind="openai-compatible"
+                models={customModelState.models}
+                value={customModelState.image}
+                onChange={(id) =>
+                  setCustomModelState((state) => ({ ...state, image: id }))
+                }
+              />
+            </div>
+          ) : customModelState.error ? (
+            <div className="flex flex-col gap-4">
+              <CapabilitySelector
+                id="custom-multimodal"
+                capability="multimodal"
+                providerKind="openai-compatible"
+                models={[]}
+                value={customModelState.multimodalManual}
+                onChange={(id) =>
+                  setCustomModelState((state) => ({
+                    ...state,
+                    multimodalManual: id,
+                  }))
+                }
+              />
+              <CapabilitySelector
+                id="custom-image"
+                capability="image"
+                providerKind="openai-compatible"
+                models={[]}
+                value={customModelState.imageManual}
+                onChange={(id) =>
+                  setCustomModelState((state) => ({
+                    ...state,
+                    imageManual: id,
+                  }))
+                }
+              />
+            </div>
           ) : null}
         </form>
       )}
@@ -721,7 +838,7 @@ function ProvidersManager() {
           <p className="text-sm text-muted-foreground">
             Use the built-in Google Gemini integration, or point at any
             OpenAI-compatible endpoint. Available models are loaded from the
-            provider itself.
+            provider itself, split into multimodal and image generation roles.
           </p>
         </div>
         <AddProviderForm />

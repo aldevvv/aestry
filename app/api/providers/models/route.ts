@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 
+import {
+  classifyProviderModel,
+  type ProviderModel,
+} from "@/lib/provider-store"
+
 // Same-origin proxy for provider model discovery. The API key travels from
 // the user's browser to their own self-hosted Aestry server and is then used
 // exactly once, against the endpoint it belongs to. Keys are never logged or
 // forwarded anywhere else.
 
-const GOOGLE_LIST_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+const GOOGLE_LIST_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models"
 
 const bodySchema = z.object({
   kind: z.enum(["google", "openai-compatible"]),
@@ -14,7 +20,7 @@ const bodySchema = z.object({
   baseUrl: z.string().trim().optional(),
 })
 
-type FetchedModel = { id: string; label?: string }
+type FetchedModel = ProviderModel
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
@@ -104,8 +110,17 @@ async function fetchGoogleModels(
       isRecord(data) && Array.isArray(data.models) ? data.models : []
     for (const item of rawModels) {
       if (!isRecord(item) || typeof item.name !== "string") continue
+      const id = item.name.replace(/^models\//, "")
+      const methods = Array.isArray(item.supportedGenerationMethods)
+        ? item.supportedGenerationMethods.filter(
+            (method): method is string => typeof method === "string"
+          )
+        : undefined
+      const capability = classifyProviderModel("google", id, methods)
+      if (!capability) continue
       models.push({
-        id: item.name.replace(/^models\//, ""),
+        id,
+        capability,
         label:
           typeof item.displayName === "string" ? item.displayName : undefined,
       })
@@ -118,7 +133,7 @@ async function fetchGoogleModels(
 
   if (models.length === 0) {
     return NextResponse.json(
-      { error: "Google returned no models for this key." },
+      { error: "Google returned no usable models for this key." },
       { status: 502 }
     )
   }
@@ -189,17 +204,22 @@ async function fetchOpenAiCompatibleModels(
   const models: FetchedModel[] = []
   for (const item of rawModels) {
     if (typeof item === "string") {
-      models.push({ id: item })
+      const capability = classifyProviderModel("openai-compatible", item)
+      if (capability) models.push({ id: item, capability })
     } else if (isRecord(item) && typeof item.id === "string") {
+      const capability = classifyProviderModel("openai-compatible", item.id)
+      if (!capability) continue
       models.push({
         id: item.id,
-        label: typeof item.displayName === "string" ? item.displayName : undefined,
+        capability,
+        label:
+          typeof item.displayName === "string" ? item.displayName : undefined,
       })
     }
   }
   if (models.length === 0) {
     return NextResponse.json(
-      { error: "The endpoint returned no models." },
+      { error: "The endpoint returned no usable models." },
       { status: 502 }
     )
   }

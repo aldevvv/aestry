@@ -4,6 +4,15 @@ import { z } from "zod"
 
 export type ProviderKind = "google" | "openai-compatible"
 
+export type ModelCapability = "multimodal" | "image"
+
+export type ProviderModel = {
+  id: string
+  /** Friendly name as reported by the provider, when available. */
+  label?: string
+  capability: ModelCapability
+}
+
 export type ProviderConfig = {
   id: string
   kind: ProviderKind
@@ -11,14 +20,51 @@ export type ProviderConfig = {
   /** Endpoint root for OpenAI-compatible providers, e.g. https://host/v1. */
   baseUrl?: string
   apiKey: string
-  /** Model selected from the provider's own model list. */
-  model?: string
-  /** Model ids the key can access, as reported by the provider. */
-  models?: string[]
+  /** Multimodal model: brainstorming, chat, reading reference images. */
+  multimodalModel?: string
+  /** Image generation model: produces the assets. */
+  imageModel?: string
+  /** Models the key can access, as reported by the provider. */
+  models?: ProviderModel[]
   createdAt: string
 }
 
 export const GOOGLE_PROVIDER_LABEL = "Google Gemini"
+
+// Realtime voice, embeddings, and video models are not usable for either
+// selector, so they are filtered out of discovery entirely.
+const EXCLUDED_MODEL_PATTERN = /embed|whisper|moderation|tts|veo|live|aqa/i
+const OPENAI_IMAGE_PATTERN =
+  /image|imagen|dall-e|flux|stable-diffusion|sd[0-9]/i
+
+/**
+ * Buckets a discovered model into the two roles Aestry needs. Returns null
+ * for models that fit neither role. Classification is a heuristic: for
+ * Google it uses the model id plus its reported generation methods, for
+ * OpenAI-compatible endpoints only the id.
+ */
+export function classifyProviderModel(
+  kind: ProviderKind,
+  id: string,
+  methods?: readonly string[]
+): ModelCapability | null {
+  if (EXCLUDED_MODEL_PATTERN.test(id)) return null
+  if (kind === "google") {
+    if (/^imagen/i.test(id) || /image/i.test(id)) return "image"
+    if (methods && !methods.includes("generateContent")) {
+      if (
+        methods.includes("predictLongRunning") ||
+        methods.includes("predict")
+      ) {
+        return "image"
+      }
+      return null
+    }
+    return "multimodal"
+  }
+  if (OPENAI_IMAGE_PATTERN.test(id)) return "image"
+  return "multimodal"
+}
 
 export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   google: "Built-in · Google Gemini",
@@ -111,8 +157,27 @@ export const useProviders = create<ProvidersState>()(
     }),
     {
       name: "aestry.providers.v1",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
+      migrate: (persisted, version) => {
+        if (version >= 2) return persisted as ProvidersState
+        // v1 stored a single `model` string and `models` as string ids.
+        const legacy = persisted as {
+          providers?: Array<Record<string, unknown>>
+        }
+        return {
+          providers: (legacy.providers ?? []).map((provider) => {
+            const { model, ...rest } = provider
+            return {
+              ...rest,
+              imageModel: typeof model === "string" ? model : undefined,
+              // v1 model lists were plain ids; drop them so the record is
+              // repopulated through discovery.
+              models: undefined,
+            } as ProviderConfig
+          }),
+        }
+      },
     }
   )
 )
