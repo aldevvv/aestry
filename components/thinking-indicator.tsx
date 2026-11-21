@@ -75,10 +75,13 @@ export function ActivityOrb({
   activity,
   size = 20,
   paused,
+  style,
 }: {
   activity: ThinkingActivity
   size?: 20 | 32 | 64
   paused?: boolean
+  /** Extra canvas styling, e.g. displaying the 64 preset at a larger CSS size. */
+  style?: React.CSSProperties
 }) {
   const states = ACTIVITY_STATES[activity]
   const reducedMotion = usePrefersReducedMotion()
@@ -90,6 +93,7 @@ export function ActivityOrb({
       state={states[index % states.length]}
       size={size}
       paused={paused}
+      style={style}
     />
   )
 }
@@ -133,6 +137,12 @@ export function ThinkingOrbIndicator({
 }
 
 /**
+ * The package only ships tuned 20/32/64 canvases (preset lookup is direct),
+ * so the welcome orb renders the 64 preset and sizes the canvas up in CSS.
+ */
+const WELCOME_ORB_SIZE = 96
+
+/**
  * Ambient dashboard orb for the welcome screen. Shares the conversation
  * rotation engine and states, but carries no activity semantics: no label,
  * no elapsed timer, hidden from assistive tech, and never implying that a
@@ -141,7 +151,11 @@ export function ThinkingOrbIndicator({
 export function WelcomeOrb({ className }: { className?: string }) {
   return (
     <div aria-hidden="true" className={className}>
-      <ActivityOrb activity={WELCOME_ORB_ACTIVITY} size={64} />
+      <ActivityOrb
+        activity={WELCOME_ORB_ACTIVITY}
+        size={64}
+        style={{ width: WELCOME_ORB_SIZE, height: WELCOME_ORB_SIZE }}
+      />
     </div>
   )
 }
