@@ -18,6 +18,9 @@ import { NextResponse } from "next/server"
 const SESSION_COOKIE = "aestry_session"
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+/** Cookie name shared with routes that read it via next/headers. */
+export const SESSION_COOKIE_NAME = SESSION_COOKIE
+
 export function accessSecret(): string | null {
   const secret = process.env.AESTRY_ACCESS_SECRET?.trim()
   return secret ? secret : null
@@ -103,9 +106,14 @@ function denial(status: number, error: string): NextResponse {
 
 /**
  * Guard for privileged route handlers. Returns a NextResponse to send when
- * access is denied, or null when the request may proceed.
+ * access is denied, or null when the request may proceed. Routes running
+ * under cacheComponents should read the session cookie via next/headers
+ * (which marks the route as runtime) and pass it here.
  */
-export function requireAccess(request: Request): NextResponse | null {
+export function requireAccess(
+  request: Request,
+  sessionToken?: string | null
+): NextResponse | null {
   const secret = accessSecret()
   if (secret === null) {
     // Unprotected mode. State-changing methods must at least originate from
@@ -119,7 +127,7 @@ export function requireAccess(request: Request): NextResponse | null {
     }
     return null
   }
-  const token = readSessionCookie(request)
+  const token = sessionToken ?? readSessionCookie(request)
   if (token && verifySessionToken(token, secret)) {
     return null
   }
@@ -134,4 +142,23 @@ export function secretsMatch(candidate: string, secret: string): boolean {
   const a = createHash("sha256").update(candidate).digest()
   const b = createHash("sha256").update(secret).digest()
   return timingSafeEqual(a, b)
+}
+
+/**
+ * Guard for read-only route handlers. Runs under cacheComponents, where the
+ * route reads its session cookie via next/headers (marking the route as
+ * runtime) and hands the value here.
+ */
+export function requireAccessForRead(
+  sessionToken: string | null | undefined
+): NextResponse | null {
+  const secret = accessSecret()
+  if (secret === null) return null
+  if (sessionToken && verifySessionToken(sessionToken, secret)) {
+    return null
+  }
+  return denial(
+    401,
+    "Operator access is required. Sign in on the Terminal or Settings page."
+  )
 }

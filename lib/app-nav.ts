@@ -1,4 +1,5 @@
 import {
+  DatabaseIcon,
   HistoryIcon,
   KeyRoundIcon,
   LayoutDashboardIcon,
@@ -9,7 +10,7 @@ import {
 } from "lucide-react"
 
 export type AppNavItem = {
-  href: "/" | "/history" | "/settings" | "/providers" | "/terminal"
+  href: "/" | "/history" | "/settings" | "/providers" | "/database" | "/terminal"
   label: string
   icon: LucideIcon
   group: "workspace" | "preferences"
@@ -38,6 +39,12 @@ export const APP_NAV_ITEMS: AppNavItem[] = [
     href: "/providers",
     label: "Providers",
     icon: KeyRoundIcon,
+    group: "preferences",
+  },
+  {
+    href: "/database",
+    label: "Database",
+    icon: DatabaseIcon,
     group: "preferences",
   },
   {
