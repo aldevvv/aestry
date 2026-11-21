@@ -7,6 +7,7 @@ import {
   type DesignBrief,
   type SkillId,
 } from "./types"
+import { GENERATION_RUBRIC } from "./quality"
 
 export type { AssetSkill, DesignBrief, SkillId, PreviewAspect } from "./types"
 export { designBriefSchema, normalizeDesignBrief } from "./types"
@@ -75,5 +76,6 @@ export function compileGenerationPrompt(
       `Apply this refinement while preserving the established direction: ${refinement.trim()}`
     )
   }
+  lines.push(GENERATION_RUBRIC)
   return lines.join("\n")
 }

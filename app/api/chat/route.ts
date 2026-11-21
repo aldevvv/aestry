@@ -128,7 +128,10 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
         : buildConsultationSystemPrompt(
             input.skillId,
             input.brief ?? null,
-            input.projectContext
+            input.projectContext,
+            undefined,
+            // The first substantive consultation proposes the session title.
+            { wantsTitle: !input.history.some((turn) => turn.role === "assistant") }
           )
 
     // The chosen model must actually exist on the configured provider —

@@ -19,6 +19,8 @@ export const consultationOutcomeSchema = z.object({
       suggestions: z.array(z.string()).max(6).nullish(),
     })
     .nullish(),
+  /** AI-proposed session title for the first consultation turn. */
+  title: z.string().max(200).nullish(),
 })
 
 export type ConsultationOutcome = {
@@ -27,6 +29,8 @@ export type ConsultationOutcome = {
   skill?: "app-icon" | "logo" | "og-image"
   brief?: z.infer<typeof designBriefSchema>
   clarification?: { question: string; suggestions?: string[] }
+  /** Sanitized AI-proposed session title, when the model supplied one. */
+  title?: string
   /**
    * False when the model's reply could not be parsed as the structured
    * contract and only its plain text was recovered. No brief is invented
