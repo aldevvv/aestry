@@ -183,6 +183,14 @@ export async function saveConversation(
   )
 }
 
+/**
+ * Resolves once every queued write has settled. Readers that must observe
+ * a consistent post-write state (e.g. the Recent list) flush first.
+ */
+export async function flushPendingWrites(): Promise<void> {
+  await Promise.all(Array.from(writeQueues.values()))
+}
+
 export async function loadConversation(
   id: string
 ): Promise<Conversation | undefined> {

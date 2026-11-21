@@ -5,7 +5,7 @@ import { listGoogleModels } from "@/lib/providers/google"
 import { isBuiltinProviderId } from "@/lib/providers/registry"
 import { ProviderRequestError } from "@/lib/providers/types"
 import { requireAccess } from "@/lib/server/access"
-import { withSlot } from "@/lib/server/limits"
+import { readJsonBody, withSlot } from "@/lib/server/limits"
 
 /**
  * POST /api/providers/verify — an explicit, bounded connection check for a
@@ -22,17 +22,15 @@ export async function POST(request: Request): Promise<NextResponse> {
   const denial = requireAccess(request)
   if (denial) return denial
 
-  const parsedBody = await request
-    .json()
-    .catch(() => null)
-    .then((value: unknown) => bodySchema.safeParse(value))
-  if (!parsedBody.success) {
+  const body = await readJsonBody(request, 4_096)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsedBody = bodySchema.safeParse(body.data)
+  if (!parsedBody.success || !isBuiltinProviderId(parsedBody.data.providerId)) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 })
   }
   const { providerId } = parsedBody.data
-  if (!isBuiltinProviderId(providerId)) {
-    return NextResponse.json({ error: "Unknown provider." }, { status: 400 })
-  }
 
   const result = await withSlot("provider-verify", 1, async () => {
     const startedAt = Date.now()

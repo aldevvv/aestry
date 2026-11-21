@@ -42,30 +42,29 @@ Asset types are internal skills, each shaping both consultation and generation:
 
 The final image prompt is compiled **server-side** from the validated brief and the selected skill's constraints — the client never supplies privileged generation instructions.
 
-## Providers (BYOK)
+## Providers (server-side credentials)
 
-Configure providers on `/providers`:
+Providers are configured through the **server environment** — the browser never sees an API key. Copy `.env.example` to `.env.local` and fill in what you use:
 
-- Built-in **Google Gemini** (paste an [AI Studio](https://aistudio.google.com/apikey) key).
-- Any **OpenAI-compatible** endpoint (base URL + key).
+- **Google Gemini Developer API** — `GOOGLE_API_KEY` (a [Google AI Studio](https://aistudio.google.com/apikey) key), built on the official `@google/genai` SDK.
+- **Google Vertex AI** — `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`, authenticated with Application Default Credentials or workload identity.
 
-Available models are **loaded from the provider itself** (`ListModels` for Google, `GET /models` for OpenAI-compatible endpoints) and split into the two roles above. Nothing is hardcoded.
+Optionally pin default models per role with `AESTRY_GEMINI_CHAT_MODEL`, `AESTRY_GEMINI_IMAGE_MODEL`, `AESTRY_VERTEX_CHAT_MODEL`, and `AESTRY_VERTEX_IMAGE_MODEL`.
 
-### API-key transport (please read)
+Available models are **loaded from the provider itself** through the SDK and split into the two roles. Nothing is hardcoded, and a selected model is validated against the provider's own discovery list — Aestry never silently routes your request to a different billable model. The Providers page shows configuration status, verifies connections with a bounded non-billable check, and lets you refresh model metadata. Browser-held keys from older versions were removed and must be added to the server environment.
 
-API keys are stored in your **browser's localStorage** — not encrypted at rest. When you consult or generate, the key travels:
+Custom OpenAI-compatible endpoints will return as a server-configured provider; they are marked Coming Soon.
 
-```
-Your browser -> your self-hosted Aestry server -> the configured provider
-```
+### Access protection (please read)
 
-The server uses a key only for the request it belongs to and never persists or logs it. There is no end-to-end encryption, and anyone who can access your deployment can observe provider traffic — keep untrusted networks away from your instance.
+Server-owned credentials mean an unprotected public deployment would let strangers spend your AI quota. Set `AESTRY_ACCESS_SECRET` in the server environment to require operator sign-in: privileged endpoints (consultation, generation, model discovery, diagnostics, project context, database status) then need a session — the browser receives only a derived, HttpOnly cookie, never the secret. Without it, Aestry runs in an explicit unprotected mode suitable for local use only: cross-site state-changing requests are rejected, and the Providers/Terminal pages tell you that protection is disabled. Diagnostics never include prompts, transcripts, or keys by default; set `AESTRY_ENABLE_DIAGNOSTICS=true` only while troubleshooting, and know that excerpts may contain conversation fragments.
 
 ### Storage
 
-- **Conversations, messages, design briefs, and generated images** live in your browser's **IndexedDB** (via `idb`). Refreshes restore them; the History page opens or deletes them (blobs included).
-- **Provider credentials** live in localStorage, separate from conversation storage. No credentials ever enter conversation records, prompts, or error messages.
-- Browser storage is finite. Very large image batches can hit quota; failures surface as warnings and conversation state stays in memory.
+- **Conversations, messages, design briefs, and generated images** live in your browser's **IndexedDB** (via `idb`). Writes are serialized per conversation, image binaries are stored atomically with their metadata, and a schema migration backfills existing data without ever clearing it.
+- **Generated assets live independently of conversations**: deleting a chat keeps every completed image in the History gallery.
+- **Server-side database persistence is planned** (Supabase/Neon/PostgreSQL connections can already be verified on the Database page) — configuring a database never silently enables synchronization.
+- Browser storage is finite. Very large image batches can hit quota; failures surface as warnings, images stay viewable for the session, and conversation state stays in memory.
 
 ## Provider capabilities (honesty notes)
 
@@ -81,10 +80,13 @@ If a message contains a public `github.com` repository URL, Aestry can gather bo
 
 ## Security notes
 
-- All API requests are treated as untrusted: outbound requests to user-configured endpoints validate protocol and destination (private ranges and cloud metadata hosts blocked by default), and redirects are re-validated per hop.
-- Self-hosted local providers (e.g. LM Studio on `localhost`) require `AESTRY_ALLOW_PRIVATE_ENDPOINTS=true` on the server.
+- Privileged endpoints are operator-gated when `AESTRY_ACCESS_SECRET` is set (fail-closed session checks, throttled sign-in, SameSite=Strict cookie, Origin-validated CSRF protection); in unprotected mode, cross-site state-changing requests are rejected.
+- All outbound requests to user-configured destinations validate protocol and destination (private ranges and cloud metadata hosts blocked by default), and redirects are re-validated per hop with credential headers stripped on cross-origin hops.
+- Request bodies and provider responses are read with hard size caps; provider operations run under a small concurrency limit; login attempts are throttled per process.
+- Diagnostics follow an allowlisted structured schema: no prompts, transcripts, or keys by default; raw excerpts exist only behind `AESTRY_ENABLE_DIAGNOSTICS=true` with credential redaction.
+- Rendered Markdown is treated as untrusted: no raw HTML, scheme-restricted links, noopener externals, no model-controlled images.
 - Generated-image URL downloads are content-type checked and size-bounded.
-- Known limitation: hostname validation is lexical; DNS-rebinding protection is left to network-level controls for exposed deployments.
+- Known limitations: hostname validation is lexical (DNS-rebinding protection is left to network-level controls for exposed deployments); without `AESTRY_ACCESS_SECRET`, non-browser callers on the network can use provider operations — configure the secret for anything reachable beyond localhost.
 
 ## Development
 

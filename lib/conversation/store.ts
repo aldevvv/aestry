@@ -2,6 +2,7 @@ import { create } from "zustand"
 
 import {
   deleteConversationRecord,
+  flushPendingWrites,
   listConversations,
   loadConversation,
   saveConversation,
@@ -99,6 +100,9 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       .catch(() => undefined)
   }
 
+  let refreshInFlight: Promise<void> | null = null
+  let refreshQueued = false
+
   function updateConversation(
     conversationId: string,
     updater: (conversation: Conversation) => Conversation
@@ -128,19 +132,36 @@ export const useConversations = create<ConversationsState>()((set, get) => {
     summaryList: null,
 
     refreshSummaryList: async () => {
-      try {
-        const records = await listConversations()
-        set({
-          summaryList: records.map((record) => ({
-            id: record.id,
-            title: record.title,
-            titleSource: record.titleSource,
-            updatedAt: record.updatedAt,
-          })),
-        })
-      } catch {
-        set({ summaryList: [] })
+      // One refresh at a time, with a trailing re-run: a refresh triggered
+      // while another is in flight must not serve a snapshot older than
+      // the writes that prompted it.
+      if (refreshInFlight) {
+        refreshQueued = true
+        return refreshInFlight
       }
+      refreshInFlight = (async () => {
+        try {
+          for (;;) {
+            refreshQueued = false
+            await flushPendingWrites()
+            const records = await listConversations()
+            set({
+              summaryList: records.map((record) => ({
+                id: record.id,
+                title: record.title,
+                titleSource: record.titleSource,
+                updatedAt: record.updatedAt,
+              })),
+            })
+            if (!refreshQueued) break
+          }
+        } catch {
+          set({ summaryList: [] })
+        } finally {
+          refreshInFlight = null
+        }
+      })()
+      return refreshInFlight
     },
 
     createConversation: (skillId) => {

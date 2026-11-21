@@ -8,7 +8,7 @@ import {
   isDatabaseProviderId,
   readDatabaseProviderConfigs,
 } from "@/lib/server/database-env"
-import { withSlot } from "@/lib/server/limits"
+import { readJsonBody, withSlot } from "@/lib/server/limits"
 
 /**
  * POST /api/database/verify — an explicit, bounded, read-only health check
@@ -25,10 +25,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   const denial = requireAccess(request)
   if (denial) return denial
 
-  const parsedBody = await request
-    .json()
-    .catch(() => null)
-    .then((value: unknown) => bodySchema.safeParse(value))
+  const body = await readJsonBody(request, 4_096)
+  if (!body.ok) {
+    return NextResponse.json({ error: body.error }, { status: body.status })
+  }
+  const parsedBody = bodySchema.safeParse(body.data)
   if (!parsedBody.success) {
     return NextResponse.json({ error: "Invalid request." }, { status: 400 })
   }
