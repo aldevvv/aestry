@@ -8,7 +8,15 @@ import { z } from "zod"
  * model is compacted.
  */
 
-export const AUTO_COMPACT_THRESHOLD = 0.95
+/**
+ * The compaction trigger no longer waits for 95% raw occupancy: a defensible
+ * budget reserves room for the model's output, thinking tokens, and system
+ * instructions on top of the conversation itself. Once
+ * projected + output reserve crosses SAFETY_OCCUPANCY of the window, the
+ * next request is at risk — compact before it is sent.
+ */
+export const COMPACTION_OUTPUT_RESERVE_TOKENS = 8_192
+export const COMPACTION_SAFETY_OCCUPANCY = 0.9
 
 /**
  * Rough token estimate for planning text (~4 chars/token). Used only for
@@ -27,7 +35,8 @@ export function shouldAutoCompact(
   contextWindow: number | undefined
 ): boolean {
   if (!contextWindow || contextWindow <= 0) return false
-  return projectedTokens / contextWindow >= AUTO_COMPACT_THRESHOLD
+  const budget = contextWindow * COMPACTION_SAFETY_OCCUPANCY
+  return projectedTokens + COMPACTION_OUTPUT_RESERVE_TOKENS >= budget
 }
 
 /**

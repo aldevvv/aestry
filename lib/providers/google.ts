@@ -435,6 +435,8 @@ export async function streamGoogleConsult(
     turns: ConsultationTurn[]
     referenceImages?: Array<{ mimeType: string; data: string }>
     requestId?: string
+    /** Client-disconnect signal; aborts the upstream request. */
+    signal?: AbortSignal
   },
   onMessageDelta?: (text: string) => void
 ): Promise<ConsultationReply> {
@@ -451,6 +453,8 @@ export async function streamGoogleConsult(
     detail: `turns: ${payload.turns.length.toString()} · images: ${(payload.referenceImages?.length ?? 0).toString()}`,
   })
   try {
+    const abortSignals: AbortSignal[] = [AbortSignal.timeout(REQUEST_TIMEOUT_MS)]
+    if (payload.signal) abortSignals.push(payload.signal)
     const stream = await client.models.generateContentStream({
       model: payload.model,
       contents,
@@ -458,7 +462,7 @@ export async function streamGoogleConsult(
         systemInstruction: payload.systemPrompt,
         // No responseMimeType here: some current models reject JSON mode in
         // streaming, and the reply parser handles fenced/plain JSON anyway.
-        abortSignal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        abortSignal: AbortSignal.any(abortSignals),
       },
     })
     let raw = ""

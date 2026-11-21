@@ -48,7 +48,8 @@ function errorStatus(error: unknown): { status: number; message: string } {
 
 function buildConsultStream(
   input: ChatRequestBody,
-  systemPrompt: string
+  systemPrompt: string,
+  clientSignal: AbortSignal
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   return new ReadableStream<Uint8Array>({
@@ -69,6 +70,9 @@ function buildConsultStream(
             turns: input.history,
             referenceImages: input.referenceImages,
             requestId,
+            // A client disconnect aborts the upstream provider request too —
+            // abandoned billable streams are not left running.
+            signal: clientSignal,
           },
           onDelta
         )
@@ -134,7 +138,7 @@ export async function POST(request: Request): Promise<NextResponse | Response> {
     // Compaction is a single JSON round-trip; consultation streams.
     if (input.mode === "consult" && input.stream) {
       // The stream owns the concurrency slot and releases it on completion.
-      return new Response(buildConsultStream(input, systemPrompt), {
+      return new Response(buildConsultStream(input, systemPrompt, request.signal), {
         headers: {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  AUTO_COMPACT_THRESHOLD,
+  COMPACTION_OUTPUT_RESERVE_TOKENS,
+  COMPACTION_SAFETY_OCCUPANCY,
   estimateTokens,
   parseCompactionReply,
   shouldAutoCompact,
@@ -15,11 +16,22 @@ describe("estimateTokens", () => {
 })
 
 describe("shouldAutoCompact", () => {
-  it("triggers at the 95% threshold", () => {
+  it("reserves output headroom on top of projected input", () => {
+    // budget = 100k * 0.9 = 90k; projected 80k + 8k reserve = 88k -> safe.
+    expect(shouldAutoCompact(80_000, 100_000)).toBe(false)
+    // 82k + 8k reserve = 90k -> at budget, compact.
+    expect(shouldAutoCompact(82_000, 100_000)).toBe(true)
     expect(shouldAutoCompact(95_000, 100_000)).toBe(true)
-    expect(shouldAutoCompact(96_000, 100_000)).toBe(true)
-    expect(shouldAutoCompact(94_000, 100_000)).toBe(false)
-    expect(AUTO_COMPACT_THRESHOLD).toBe(0.95)
+  })
+
+  it("uses a defensible budget, not a raw 95% of the window", () => {
+    expect(COMPACTION_SAFETY_OCCUPANCY).toBe(0.9)
+    expect(COMPACTION_OUTPUT_RESERVE_TOKENS).toBeGreaterThan(0)
+    // The budget rule triggers EARLIER than the raw 95%: 85% occupancy plus
+    // the output reserve already crosses the safety line.
+    expect(shouldAutoCompact(85_000, 100_000)).toBe(true)
+    // Comfortably below budget minus reserve: no compaction.
+    expect(shouldAutoCompact(70_000, 100_000)).toBe(false)
   })
 
   it("never triggers when the window is unknown", () => {

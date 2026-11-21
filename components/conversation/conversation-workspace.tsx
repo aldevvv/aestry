@@ -240,6 +240,55 @@ export function ConversationWorkspace({
     [consultation]
   )
 
+  /**
+   * Second stage of the compaction decision: the cheap client-side estimate
+   * decides when to ask, an exact server-side countTokens decides whether a
+   * billable compaction round-trip is actually necessary. When counting is
+   * unavailable the estimate is trusted.
+   */
+  const confirmCompactionNeeded = React.useCallback(
+    async (options: {
+      providerId: "gemini" | "vertex"
+      model: string
+      skillId: "app-icon" | "logo" | "og-image"
+      brief: unknown
+      history: Array<{ role: "user" | "assistant"; text: string }>
+      projectContext?: string
+      estimateSaysCompact: boolean
+      window: number | undefined
+    }): Promise<boolean> => {
+      if (!options.estimateSaysCompact) return false
+      try {
+        const response = await fetch("/api/chat/tokens", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            providerId: options.providerId,
+            model: options.model,
+            skillId: options.skillId,
+            brief: options.brief,
+            history: options.history,
+            projectContext: options.projectContext,
+          }),
+          signal: AbortSignal.timeout(30_000),
+        })
+        const data: unknown = await response.json().catch(() => null)
+        if (
+          response.ok &&
+          isRecord(data) &&
+          data.available === true &&
+          typeof data.totalTokens === "number"
+        ) {
+          return shouldAutoCompact(data.totalTokens, options.window)
+        }
+      } catch {
+        // Counting is an enhancement; fall back to the estimate.
+      }
+      return true
+    },
+    []
+  )
+
   const handleSend = React.useCallback(
     async (text: string, files: File[]) => {
       if (!consultation || busy) return
@@ -253,9 +302,9 @@ export function ConversationWorkspace({
           router.push(`/chat/${target.id}`)
         }
 
-        // Auto-compact BEFORE the new message is appended, when the projected
-        // context approaches the consultation model's window. The compaction
-        // point must land before this message, otherwise the message would be
+        // Auto-compact BEFORE the new message is appended, when the context
+        // approaches the consultation model's window. The compaction point
+        // must land before this message, otherwise the message would be
         // summarized away and never reach the model.
         const consultationModelWindow = selectedModelContextWindow(
           useProviders.getState(),
@@ -265,7 +314,30 @@ export function ConversationWorkspace({
           (target.contextTokens ?? 0) +
           estimateTokens(text) +
           files.length * ESTIMATED_TOKENS_PER_IMAGE
-        if (shouldAutoCompact(projectedTokens, consultationModelWindow)) {
+        const estimateSaysCompact = shouldAutoCompact(
+          projectedTokens,
+          consultationModelWindow
+        )
+        const latestBeforeSend =
+          useConversations.getState().conversations[target.id]
+        const prospectiveHistory = buildConsultationTurns(
+          latestBeforeSend?.messages ?? [],
+          16,
+          16_000,
+          latestBeforeSend?.compaction?.upToMessageId
+        )
+        prospectiveHistory.push({ role: "user", text })
+        const needsCompaction = await confirmCompactionNeeded({
+          providerId: consultation.providerId,
+          model: consultation.model,
+          skillId: target.skillId,
+          brief: target.brief,
+          history: prospectiveHistory,
+          projectContext: target.projectContext?.summary,
+          estimateSaysCompact,
+          window: consultationModelWindow,
+        })
+        if (needsCompaction) {
           const compacted = await runCompaction(target.id)
           if (!compacted) {
             toast.warning(
@@ -461,7 +533,7 @@ export function ConversationWorkspace({
         setBusy(false)
       }
     },
-    [busy, consultation, conversation, router, runCompaction]
+    [busy, consultation, conversation, confirmCompactionNeeded, router, runCompaction]
   )
 
   const runGeneration = React.useCallback(
