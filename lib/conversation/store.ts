@@ -38,11 +38,15 @@ type ConversationsState = {
   ) => void
   setPhase: (conversationId: string, phase: ConversationPhase) => void
   setBrief: (conversationId: string, brief: DesignBrief) => void
-  setQuantity: (conversationId: string, quantity: 1 | 2 | 4) => void
   setSkill: (conversationId: string, skillId: SkillId) => void
   setProjectContext: (
     conversationId: string,
     context: NonNullable<Conversation["projectContext"]>
+  ) => void
+  setContextTokens: (conversationId: string, tokens: number | null) => void
+  setCompaction: (
+    conversationId: string,
+    compaction: NonNullable<Conversation["compaction"]>
   ) => void
   addGeneration: (
     conversationId: string,
@@ -104,7 +108,6 @@ export const useConversations = create<ConversationsState>()((set, get) => {
         id: crypto.randomUUID(),
         title: "New conversation",
         skillId,
-        quantity: 1,
         phase: "idle",
         messages: [],
         brief: null,
@@ -230,13 +233,6 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       }))
     },
 
-    setQuantity: (conversationId, quantity) => {
-      updateConversation(conversationId, (conversation) => ({
-        ...conversation,
-        quantity,
-      }))
-    },
-
     setSkill: (conversationId, skillId) => {
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
@@ -248,6 +244,20 @@ export const useConversations = create<ConversationsState>()((set, get) => {
       updateConversation(conversationId, (conversation) => ({
         ...conversation,
         projectContext: context,
+      }))
+    },
+
+    setContextTokens: (conversationId, tokens) => {
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        contextTokens: tokens ?? undefined,
+      }))
+    },
+
+    setCompaction: (conversationId, compaction) => {
+      updateConversation(conversationId, (conversation) => ({
+        ...conversation,
+        compaction,
       }))
     },
 

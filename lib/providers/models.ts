@@ -15,6 +15,11 @@ export type ProviderModel = {
   /** Friendly name as reported by the provider, when available. */
   label?: string
   capability: ModelCapability
+  /**
+   * Reported context window in tokens (Google only). Undefined for
+   * OpenAI-compatible endpoints, which do not expose it.
+   */
+  contextWindow?: number
 }
 
 export const GOOGLE_PROVIDER_LABEL = "Google Gemini"

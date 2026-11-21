@@ -12,11 +12,20 @@ import {
 import { MessageList } from "@/components/conversation/message-list"
 import { cacheImageUrl } from "@/components/conversation/image-url"
 import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
 import { useMounted } from "@/hooks/use-mounted"
 import {
   buildConsultationTurns,
 } from "@/lib/conversation/consultation"
+import {
+  extractPartialMessage,
+  streamChat,
+} from "@/lib/conversation/streaming"
+import { ThinkingOrbIndicator } from "@/components/thinking-indicator"
+import {
+  ESTIMATED_TOKENS_PER_IMAGE,
+  estimateTokens,
+  shouldAutoCompact,
+} from "@/lib/conversation/compaction"
 import { detectGitHubUrl, fetchProjectContext } from "@/lib/conversation/project-context"
 import {
   loadImageBlob,
@@ -31,7 +40,10 @@ import {
   inferCapabilities,
   useProviders,
 } from "@/lib/provider-store"
-import { getSkill, type SkillId } from "@/lib/skills/registry"
+import {
+  getSkill,
+  isSkillId,
+} from "@/lib/skills/registry"
 import type {
   GenerationRecord,
   StoredImageRef,
@@ -59,16 +71,10 @@ function fileToBase64(
   })
 }
 
-const WELCOME_SUGGESTIONS: Array<{ skillId: SkillId; text: string }> = [
-  {
-    skillId: "app-icon",
-    text: "Design a modern app icon for a productivity application.",
-  },
-  { skillId: "logo", text: "Create a minimal logo for my developer tool." },
-  {
-    skillId: "og-image",
-    text: "Create an OG image for my open-source project.",
-  },
+const WELCOME_SUGGESTIONS: string[] = [
+  "Design a modern app icon for a productivity application.",
+  "Create a minimal logo for my developer tool.",
+  "Create an OG image for my open-source project.",
 ]
 
 export function ConversationWorkspace({
@@ -86,8 +92,9 @@ export function ConversationWorkspace({
   const consultation = resolveSelection(providers, selections.consultation)
   const generation = resolveSelection(providers, selections.generation)
 
-  const [localSkillId, setLocalSkillId] = React.useState<SkillId>("app-icon")
   const [busy, setBusy] = React.useState(false)
+  const [compacting, setCompacting] = React.useState(false)
+  const [streamingText, setStreamingText] = React.useState<string | null>(null)
   const missing =
     mounted &&
     Boolean(conversationId) &&
@@ -140,36 +147,97 @@ export function ConversationWorkspace({
     // Re-anchor when a new message lands while already at the bottom.
   }, [conversation?.messages.length, nearBottom, scrollToBottom])
 
-  const handleSkillChange = React.useCallback(
-    (nextSkillId: SkillId) => {
-      if (conversation) {
-        if (conversation.skillId !== nextSkillId) {
-          useConversations.getState().setSkill(conversation.id, nextSkillId)
-          useConversations.getState().appendMessage(conversation.id, {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: {
-              type: "context",
-              title: "Skill changed",
-              summary: `This conversation is now designing a ${getSkill(nextSkillId).name}. Earlier decisions are kept unless you revisit them.`,
-            },
-            createdAt: new Date().toISOString(),
-          })
+  const runCompaction = React.useCallback(
+    async (conversationId: string): Promise<boolean> => {
+      if (!consultation) return false
+      setCompacting(true)
+      try {
+        const latest = useConversations.getState().conversations[conversationId]
+        if (!latest || latest.messages.length === 0) return false
+        const history = buildConsultationTurns(
+          latest.messages,
+          80,
+          60_000,
+          latest.compaction?.upToMessageId
+        )
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            kind: consultation.provider.kind,
+            apiKey: consultation.provider.apiKey,
+            model: consultation.model,
+            baseUrl: consultation.provider.baseUrl,
+            skillId: latest.skillId,
+            history,
+            mode: "compact",
+          }),
+          signal: AbortSignal.timeout(180_000),
+        })
+        const data: unknown = await response.json().catch(() => null)
+        if (!response.ok) {
+          const message =
+            isRecord(data) && typeof data.error === "string"
+              ? data.error
+              : "Compaction failed."
+          toast.error(message)
+          return false
         }
-      } else {
-        setLocalSkillId(nextSkillId)
+        if (
+          !isRecord(data) ||
+          !isRecord(data.compaction) ||
+          typeof data.compaction.summary !== "string"
+        ) {
+          toast.error("Compaction could not produce a reliable summary.")
+          return false
+        }
+        const lastMessage = latest.messages[latest.messages.length - 1]
+        if (!lastMessage) return false
+        const decisions =
+          isRecord(data.compaction) && Array.isArray(data.compaction.decisions)
+            ? data.compaction.decisions.filter(
+                (decision): decision is string => typeof decision === "string"
+              )
+            : undefined
+        useConversations.getState().setCompaction(conversationId, {
+          summary: data.compaction.summary,
+          decisions,
+          upToMessageId: lastMessage.id,
+          at: new Date().toISOString(),
+        })
+        if (
+          isRecord(data) &&
+          isRecord(data.usage) &&
+          typeof data.usage.promptTokens === "number"
+        ) {
+          useConversations
+            .getState()
+            .setContextTokens(conversationId, data.usage.promptTokens)
+        }
+        useConversations.getState().appendMessage(conversationId, {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: {
+            type: "context",
+            title: "Conversation compacted",
+            summary:
+              "Earlier context was summarized so the consultation stays within the model's window. The full history remains below.",
+          },
+          createdAt: new Date().toISOString(),
+        })
+        return true
+      } catch (error) {
+        toast.error(
+          error instanceof DOMException && error.name === "TimeoutError"
+            ? "Compaction timed out."
+            : "Compaction could not reach the server."
+        )
+        return false
+      } finally {
+        setCompacting(false)
       }
     },
-    [conversation]
-  )
-
-  const handleQuantityChange = React.useCallback(
-    (quantity: 1 | 2 | 4) => {
-      if (conversation) {
-        useConversations.getState().setQuantity(conversation.id, quantity)
-      }
-    },
-    [conversation]
+    [consultation]
   )
 
   const handleSend = React.useCallback(
@@ -179,8 +247,32 @@ export function ConversationWorkspace({
       try {
         let target = conversation
         if (!target) {
-          target = useConversations.getState().createConversation(localSkillId)
+          // The consultant assigns the asset skill from the request; the
+          // conversation starts neutral until then.
+          target = useConversations.getState().createConversation("app-icon")
           router.push(`/chat/${target.id}`)
+        }
+
+        // Auto-compact BEFORE the new message is appended, when the projected
+        // context reaches 95% of the consultation model's window. The
+        // compaction point must land before this message, otherwise the
+        // message would be summarized away and never reach the model.
+        const consultationModelRecord = consultation.provider.models?.find(
+          (model) => model.id === consultation.model
+        )
+        const projectedTokens =
+          (target.contextTokens ?? 0) +
+          estimateTokens(text) +
+          files.length * ESTIMATED_TOKENS_PER_IMAGE
+        if (
+          shouldAutoCompact(projectedTokens, consultationModelRecord?.contextWindow)
+        ) {
+          const compacted = await runCompaction(target.id)
+          if (!compacted) {
+            toast.warning(
+              "Auto-compaction failed — the next request may exceed the model's context window."
+            )
+          }
         }
 
         const referenceImages: Array<{ mimeType: string; data: string }> = []
@@ -241,16 +333,21 @@ export function ConversationWorkspace({
         useConversations.getState().setPhase(target.id, "consulting")
         const latest =
           useConversations.getState().conversations[target.id]
-        const history = buildConsultationTurns(latest?.messages ?? [])
+        const history = buildConsultationTurns(
+          latest?.messages ?? [],
+          16,
+          16_000,
+          latest?.compaction?.upToMessageId
+        )
         const capabilities = inferCapabilities(
           consultation.provider.kind,
           consultation.model
         )
-
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        // Streamed consultation: deltas render live; the validated outcome
+        // arrives at the end of the stream.
+        let raw = ""
+        const result = await streamChat(
+          {
             kind: consultation.provider.kind,
             apiKey: consultation.provider.apiKey,
             model: consultation.model,
@@ -263,42 +360,37 @@ export function ConversationWorkspace({
                 ? referenceImages
                 : undefined,
             projectContext: projectContextSummary,
-          }),
-          signal: AbortSignal.timeout(180_000),
-        })
-        const data: unknown = await response.json().catch(() => null)
-        if (!response.ok) {
-          const message =
-            isRecord(data) && typeof data.error === "string"
-              ? data.error
-              : `Consultation failed (${response.status}).`
-          useConversations.getState().appendMessage(target.id, {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: { type: "error", error: message, scope: "consultation" },
-            createdAt: new Date().toISOString(),
-          })
-          useConversations.getState().setPhase(target.id, "error")
-          toast.error(message)
-          return
-        }
-        if (!isRecord(data) || !isRecord(data.outcome)) {
-          useConversations.getState().appendMessage(target.id, {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: {
-              type: "error",
-              error: "The consultation response could not be read.",
-              scope: "consultation",
+          },
+          {
+            onDelta: (delta) => {
+              raw += delta
+              setStreamingText(extractPartialMessage(raw))
             },
+            onUsage: (promptTokens) => {
+              // Authoritative context usage for the pie indicator.
+              useConversations
+                .getState()
+                .setContextTokens(target.id, promptTokens)
+            },
+          },
+          AbortSignal.timeout(180_000)
+        )
+        setStreamingText(null)
+        if (!result.ok) {
+          useConversations.getState().appendMessage(target.id, {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: { type: "error", error: result.error, scope: "consultation" },
             createdAt: new Date().toISOString(),
           })
           useConversations.getState().setPhase(target.id, "error")
+          toast.error(result.error)
           return
         }
-        const outcome = data.outcome as {
+        const outcome = result.outcome as {
           message?: unknown
           phase?: unknown
+          skill?: unknown
           brief?: unknown
           clarification?: unknown
           structured?: unknown
@@ -311,6 +403,10 @@ export function ConversationWorkspace({
             content: { type: "assistant-text", text: outcome.message },
             createdAt: new Date().toISOString(),
           })
+        }
+        if (typeof outcome.skill === "string" && isSkillId(outcome.skill)) {
+          // The consultant assigns (or changes) the asset skill.
+          state.setSkill(target.id, outcome.skill)
         }
         if (
           isRecord(outcome.brief) &&
@@ -352,8 +448,8 @@ export function ConversationWorkspace({
             ? "ready_for_generation"
             : "awaiting_user"
         )
-        if (typeof data.warning === "string") {
-          toast.warning(data.warning)
+        if (typeof result.warning === "string") {
+          toast.warning(result.warning)
         }
       } catch (error) {
         const message =
@@ -374,7 +470,7 @@ export function ConversationWorkspace({
         setBusy(false)
       }
     },
-    [busy, consultation, conversation, localSkillId, router]
+    [busy, consultation, conversation, router, runCompaction]
   )
 
   const runGeneration = React.useCallback(
@@ -485,24 +581,24 @@ export function ConversationWorkspace({
         results.forEach((item: unknown, index: number) => {
           const recordItem = record.items[index]
           if (!recordItem) return
+          // Adapter contract: { ok: true, mimeType, data } per image.
           if (
             isRecord(item) &&
             item.ok === true &&
-            isRecord(item.image) &&
-            typeof item.image.mimeType === "string" &&
-            typeof item.image.data === "string"
+            typeof item.mimeType === "string" &&
+            typeof item.data === "string"
           ) {
             const imageId = crypto.randomUUID()
-            const binary = atob(item.image.data)
+            const binary = atob(item.data)
             const bytes = Uint8Array.from(binary, (char) =>
               char.charCodeAt(0)
             )
-            const blob = new Blob([bytes], { type: item.image.mimeType })
+            const blob = new Blob([bytes], { type: item.mimeType })
             void saveImageBlob({
               id: imageId,
               conversationId: conversation.id,
               role: "generated",
-              mimeType: item.image.mimeType,
+              mimeType: item.mimeType,
               blob,
             })
             cacheImageUrl(imageId, URL.createObjectURL(blob))
@@ -512,7 +608,7 @@ export function ConversationWorkspace({
               .updateGenerationItem(conversation.id, record.id, recordItem.id, {
                 status: "done",
                 imageId,
-                mimeType: item.image.mimeType,
+                mimeType: item.mimeType,
               })
           } else {
             const message =
@@ -603,19 +699,18 @@ export function ConversationWorkspace({
           response.ok &&
           isRecord(first) &&
           first.ok === true &&
-          isRecord(first.image) &&
-          typeof first.image.mimeType === "string" &&
-          typeof first.image.data === "string"
+          typeof first.mimeType === "string" &&
+          typeof first.data === "string"
         ) {
           const imageId = crypto.randomUUID()
-          const binary = atob(first.image.data)
+          const binary = atob(first.data)
           const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
-          const blob = new Blob([bytes], { type: first.image.mimeType })
+          const blob = new Blob([bytes], { type: first.mimeType })
           void saveImageBlob({
             id: imageId,
             conversationId: conversation.id,
             role: "generated",
-            mimeType: first.image.mimeType,
+            mimeType: first.mimeType,
             blob,
           })
           cacheImageUrl(imageId, URL.createObjectURL(blob))
@@ -624,7 +719,7 @@ export function ConversationWorkspace({
             .updateGenerationItem(conversation.id, generationId, itemId, {
               status: "done",
               imageId,
-              mimeType: first.image.mimeType,
+              mimeType: first.mimeType,
             })
           toast.success("Image regenerated")
         } else {
@@ -666,12 +761,12 @@ export function ConversationWorkspace({
   }, [])
 
   if (!mounted) {
-    return <div className="min-h-[calc(100dvh-3rem)]" aria-hidden="true" />
+    return <div className="min-h-[calc(100dvh-2.5rem)]" aria-hidden="true" />
   }
 
   if (missing && conversationId) {
     return (
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-4 px-4 py-16 text-center">
+      <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col items-center justify-center gap-4 px-4 py-16 text-center">
         <p className="text-sm font-medium text-foreground">
           Conversation not found
         </p>
@@ -687,7 +782,7 @@ export function ConversationWorkspace({
 
   if (!conversation) {
     return (
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center px-4 py-10 sm:px-6">
+      <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col justify-center px-4 py-8 sm:px-6">
         <div className="animate-in fade-in-0 slide-in-from-bottom-2 flex flex-col gap-2 text-center duration-500">
           <h1 className="text-xl font-semibold tracking-tight text-foreground sm:text-2xl">
             What would you like to create?
@@ -699,21 +794,9 @@ export function ConversationWorkspace({
         <div className="animate-in fade-in-0 slide-in-from-bottom-2 mt-8 duration-500">
           <Composer
             variant="welcome"
-            skillId={localSkillId}
-            quantity={1}
-            consultationLabel={
-              consultation
-                ? `${consultation.provider.label} · ${consultation.model}`
-                : null
-            }
-            generationLabel={
-              generation ? `${generation.provider.label} · ${generation.model}` : null
-            }
             busy={busy}
             suggestions={WELCOME_SUGGESTIONS}
             onSend={(text, files) => void handleSend(text, files)}
-            onSkillChange={handleSkillChange}
-            onQuantityChange={() => {}}
           />
         </div>
       </div>
@@ -728,18 +811,19 @@ export function ConversationWorkspace({
       : undefined
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className="flex h-[calc(100dvh-2.5rem)] flex-col">
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        <div className="mx-auto w-full max-w-2xl px-4 py-6 sm:px-6">
+        <div className="mx-auto w-full max-w-4xl px-4 py-4 sm:px-6">
           <MessageList
             messages={conversation.messages}
             generations={conversation.generations}
             skillId={conversation.skillId}
             generatableBriefId={generatableBriefId}
+            streamingText={streamingText}
             onGenerate={(count) => void runGeneration(count)}
             onRetryItem={(generationId, itemId) =>
               void retryGenerationItem(generationId, itemId)
@@ -750,12 +834,11 @@ export function ConversationWorkspace({
             onUseAsReference={useAsReference}
           />
           {busy && conversation.phase === "consulting" ? (
-            <div className="mt-6 flex items-center gap-2 text-sm text-muted-foreground">
-              <Spinner className="size-4" />
-              Consulting…
+            <div className="mt-6">
+              <ThinkingOrbIndicator activity="consult" />
             </div>
           ) : null}
-          <div className="h-4" />
+          <div className="h-2" />
         </div>
       </div>
       {!nearBottom ? (
@@ -776,11 +859,11 @@ export function ConversationWorkspace({
           role="status"
           className="shrink-0 bg-warning/10 px-4 py-2 text-xs text-warning sm:px-6"
         >
-          <div className="mx-auto w-full max-w-2xl">{storageWarning}</div>
+          <div className="mx-auto w-full max-w-4xl">{storageWarning}</div>
         </div>
       ) : null}
-      <div className="shrink-0 border-t border-border bg-background px-4 pb-3 pt-3 sm:px-6">
-        <div className="mx-auto w-full max-w-2xl">
+      <div className="shrink-0 bg-background px-4 pb-3 pt-3 sm:px-6">
+        <div className="mx-auto w-full max-w-4xl">
           {pendingReferences.length > 0 ? (
             <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
               <span>
@@ -800,20 +883,11 @@ export function ConversationWorkspace({
           ) : null}
           <Composer
             variant="conversation"
-            skillId={conversation.skillId}
-            quantity={conversation.quantity}
-            consultationLabel={
-              consultation
-                ? `${consultation.provider.label} · ${consultation.model}`
-                : null
-            }
-            generationLabel={
-              generation ? `${generation.provider.label} · ${generation.model}` : null
-            }
             busy={busy}
+            contextTokens={conversation.contextTokens ?? null}
+            compacting={compacting}
+            onCompact={() => void runCompaction(conversation.id)}
             onSend={(text, files) => void handleSend(text, files)}
-            onSkillChange={handleSkillChange}
-            onQuantityChange={handleQuantityChange}
           />
         </div>
       </div>

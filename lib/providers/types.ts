@@ -6,6 +6,8 @@ export type DiscoveredModel = {
   id: string
   label?: string
   capability: ModelCapability
+  /** Reported context window in tokens, when the provider exposes it. */
+  contextWindow?: number
 }
 
 export type ImageGenerationItem =

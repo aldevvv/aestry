@@ -1,4 +1,6 @@
 import { fetchImageBounded } from "@/lib/server/outbound"
+import { createUpstreamSseParser } from "@/lib/server/sse"
+import { logProvider } from "@/lib/server/logs"
 
 import { inferCapabilities } from "./models"
 import {
@@ -96,7 +98,12 @@ export async function consultOpenAiCompatible(payload: {
   systemPrompt: string
   turns: Array<{ role: "user" | "assistant"; text: string }>
   referenceImages?: Array<{ mimeType: string; data: string }>
-}): Promise<{ text: string; structured: boolean; warning?: string }> {
+}): Promise<{
+  text: string
+  structured: boolean
+  warning?: string
+  usage?: { promptTokens?: number }
+}> {
   const root = apiRoot(payload.baseUrl)
   const capabilities = inferCapabilities("openai-compatible", payload.model)
   let warning: string | undefined
@@ -144,7 +151,10 @@ export async function consultOpenAiCompatible(payload: {
     body.response_format = { type: "json_object" }
   }
 
-  const result = await safeFetchJson<{ choices?: unknown }>(
+  const result = await safeFetchJson<{
+    choices?: unknown
+    usage?: unknown
+  }>(
     endpointUrl(root, "/chat/completions"),
     {
       method: "POST",
@@ -170,7 +180,17 @@ export async function consultOpenAiCompatible(payload: {
   if (!text || !text.trim()) {
     throw new ProviderRequestError(502, "The model returned an empty response.")
   }
-  return { text: text.trim(), structured: capabilities.structuredJson, warning }
+  const usage = isRecord(data) && isRecord(data.usage) ? data.usage : null
+  const promptTokens =
+    usage && typeof usage.prompt_tokens === "number"
+      ? usage.prompt_tokens
+      : undefined
+  return {
+    text: text.trim(),
+    structured: capabilities.structuredJson,
+    warning,
+    usage: { promptTokens },
+  }
 }
 
 export async function generateImagesOpenAiCompatible(payload: {
@@ -240,4 +260,153 @@ export async function generateImagesOpenAiCompatible(payload: {
     return [{ ok: false, error: "The endpoint returned no images." }]
   }
   return results
+}
+
+export async function streamOpenAiCompatibleConsult(
+  payload: {
+    apiKey: string
+    model: string
+    baseUrl?: string
+    systemPrompt: string
+    turns: Array<{ role: "user" | "assistant"; text: string }>
+    referenceImages?: Array<{ mimeType: string; data: string }>
+  },
+  onDelta?: (text: string) => void
+): Promise<{
+  text: string
+  structured: boolean
+  warning?: string
+  usage?: { promptTokens?: number }
+}> {
+  const root = apiRoot(payload.baseUrl)
+  const capabilities = inferCapabilities("openai-compatible", payload.model)
+
+  const messages: Array<Record<string, unknown>> = [
+    { role: "system", content: payload.systemPrompt },
+  ]
+  for (const turn of payload.turns) {
+    if (
+      turn.role === "user" &&
+      payload.referenceImages &&
+      payload.referenceImages.length > 0 &&
+      turn === payload.turns[payload.turns.length - 1] &&
+      capabilities.vision
+    ) {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: turn.text },
+          ...payload.referenceImages.map((image) => ({
+            type: "image_url",
+            image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+          })),
+        ],
+      })
+    } else {
+      messages.push({ role: turn.role, content: turn.text })
+    }
+  }
+
+  const body: Record<string, unknown> = {
+    model: payload.model,
+    messages,
+    stream: true,
+  }
+  if (capabilities.structuredJson) {
+    body.response_format = { type: "json_object" }
+  }
+
+  logProvider({
+    scope: "openai.chat.stream",
+    message: `POST /chat/completions (stream) · model ${payload.model}`,
+    detail: JSON.stringify({
+      model: payload.model,
+      turns: payload.turns,
+      systemPromptChars: payload.systemPrompt.length,
+      vision: capabilities.vision,
+    }),
+    secret: payload.apiKey,
+  })
+
+  const response = await fetch(endpointUrl(root, "/chat/completions"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${payload.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  logProvider({
+    scope: "openai.chat.stream",
+    level: response.ok ? "info" : "error",
+    message: `upstream responded ${response.status}`,
+  })
+  if (!response.ok) {
+    throw await providerErrorFromResponse(response, "Consultation failed")
+  }
+  if (!response.body) {
+    throw new ProviderRequestError(502, "The consultation stream was empty.")
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let text = ""
+  let streamError: string | undefined
+  const rawSseLines: string[] = []
+  let rawSseTruncated = false
+  const parser = createUpstreamSseParser((data) => {
+    if (rawSseLines.length < 16) {
+      rawSseLines.push(data.length > 300 ? `${data.slice(0, 300)}…` : data)
+    } else if (!rawSseTruncated) {
+      rawSseTruncated = true
+      rawSseLines.push("… more events omitted …")
+    }
+    if (data === "[DONE]") return
+    try {
+      const chunk: unknown = JSON.parse(data)
+      if (isRecord(chunk) && isRecord(chunk.error)) {
+        streamError =
+          typeof chunk.error.message === "string"
+            ? chunk.error.message
+            : "The endpoint rejected the streaming request."
+        return
+      }
+      const choice =
+        isRecord(chunk) &&
+        Array.isArray(chunk.choices) &&
+        isRecord(chunk.choices[0])
+          ? chunk.choices[0]
+          : null
+      const delta = choice && isRecord(choice.delta) ? choice.delta : null
+      const deltaText =
+        delta && typeof delta.content === "string" ? delta.content : undefined
+      if (deltaText) {
+        text += deltaText
+        onDelta?.(deltaText)
+      }
+    } catch {
+      // Skip malformed SSE payloads; deltas are additive only.
+    }
+  })
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    parser.push(decoder.decode(value, { stream: true }))
+  }
+  const rawExcerpt = `${rawSseLines.join("\n")}${rawSseTruncated ? "\n… more events omitted …" : ""}`
+  logProvider({
+    scope: "openai.chat.stream",
+    level: streamError || !text.trim() ? "error" : "info",
+    message: `stream finished · ${text.length.toString()} chars`,
+    detail: rawExcerpt,
+    secret: payload.apiKey,
+  })
+  if (streamError) {
+    throw new ProviderRequestError(502, streamError)
+  }
+  if (!text.trim()) {
+    throw new ProviderRequestError(502, "The model returned an empty response.")
+  }
+  return { text, structured: capabilities.structuredJson }
 }

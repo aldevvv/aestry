@@ -1,7 +1,25 @@
 import { describe, expect, it } from "vitest"
 
-import { buildConsultationTurns, parseConsultationReply } from "./consultation"
+import {
+  buildConsultationSystemPrompt,
+  buildConsultationTurns,
+  parseConsultationReply,
+} from "./consultation"
 import type { Message } from "./types"
+
+describe("buildConsultationSystemPrompt", () => {
+  it("includes the punctuation style rule for user-facing text", () => {
+    const prompt = buildConsultationSystemPrompt("app-icon", null)
+    expect(prompt).toContain("Never use em dashes")
+    expect(prompt).toContain("1. First point")
+  })
+
+  it("labels fetched project context as untrusted material", () => {
+    const prompt = buildConsultationSystemPrompt("app-icon", null, "Some project README")
+    expect(prompt).toContain("untrusted reference material")
+    expect(prompt).toContain("Some project README")
+  })
+})
 
 describe("parseConsultationReply", () => {
   it("parses a valid structured outcome", () => {
@@ -104,5 +122,32 @@ describe("buildConsultationTurns", () => {
       makeMessage(index % 2 === 0 ? "user" : "assistant", "text", { text: `turn ${index}` })
     )
     expect(buildConsultationTurns(messages, 10)).toHaveLength(10)
+  })
+
+  it("merges consecutive same-role turns (Gemini requires alternation)", () => {
+    const messages = [
+      makeMessage("user", "text", { text: "Create a logo" }),
+      makeMessage("user", "text", { text: "Hello?" }),
+      makeMessage("assistant", "assistant-text", { text: "Sure" }),
+    ]
+    const turns = buildConsultationTurns(messages)
+    expect(turns).toHaveLength(2)
+    expect(turns[0].role).toBe("user")
+    expect(turns[0].text).toContain("Create a logo")
+    expect(turns[0].text).toContain("Hello?")
+    expect(turns[1].role).toBe("assistant")
+  })
+
+  it("only sends messages after the compaction point", () => {
+    const messages = [
+      makeMessage("user", "text", { text: "before compaction" }),
+      makeMessage("assistant", "assistant-text", { text: "compaction marker" }),
+      makeMessage("user", "text", { text: "after compaction" }),
+    ]
+    const marker = messages[1].id
+    const turns = buildConsultationTurns(messages, 16, 16_000, marker)
+    expect(turns.map((turn) => turn.text)).toEqual(["after compaction"])
+    // Without a compaction point, everything is sent.
+    expect(buildConsultationTurns(messages)).toHaveLength(3)
   })
 })

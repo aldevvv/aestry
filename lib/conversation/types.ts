@@ -62,11 +62,22 @@ export type Conversation = {
   id: string
   title: string
   skillId: SkillId
-  quantity: 1 | 2 | 4
   phase: ConversationPhase
   messages: Message[]
   brief: DesignBrief | null
   generations: Record<string, GenerationRecord>
+  /**
+   * Auto-compaction state: the summarized continuation context and the last
+   * message it covers. Rendered history is never rewritten.
+   */
+  compaction?: {
+    summary: string
+    decisions?: string[]
+    upToMessageId: string
+    at: string
+  }
+  /** Prompt tokens measured by the provider after the last consultation. */
+  contextTokens?: number
   /** Bounded public project context, when a GitHub reference was resolved. */
   projectContext?: {
     url: string

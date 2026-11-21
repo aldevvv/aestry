@@ -7,11 +7,12 @@ import { ErrorCode, useDropzone, type FileRejection } from "react-dropzone"
 import { toast } from "sonner"
 import {
   ArrowUpIcon,
-  CpuIcon,
   PaperclipIcon,
+  Settings2Icon,
   XIcon,
 } from "lucide-react"
 
+import { ModelRoleSelect } from "@/components/model-role-select"
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
 import {
@@ -22,16 +23,8 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Spinner } from "@/components/ui/spinner"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { SKILL_IDS, getSkill, isSkillId, type SkillId } from "@/lib/skills/registry"
+import { ActivityOrb } from "@/components/thinking-indicator"
+import { useProviders } from "@/lib/provider-store"
 
 const MAX_ATTACHMENTS = 4
 const MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -45,28 +38,23 @@ const ACCEPTED_IMAGE_TYPES = {
 
 export type ComposerProps = {
   variant: "welcome" | "conversation"
-  skillId: SkillId
-  quantity: 1 | 2 | 4
-  consultationLabel: string | null
-  generationLabel: string | null
   busy: boolean
-  suggestions?: Array<{ skillId: SkillId; text: string }>
+  /** Prompt tokens measured after the last consultation (null = unknown). */
+  contextTokens?: number | null
+  compacting?: boolean
+  onCompact?: () => void
+  suggestions?: string[]
   onSend: (text: string, files: File[]) => void
-  onSkillChange: (skillId: SkillId) => void
-  onQuantityChange: (quantity: 1 | 2 | 4) => void
 }
 
 export function Composer({
   variant,
-  skillId,
-  quantity,
-  consultationLabel,
-  generationLabel,
   busy,
+  contextTokens,
+  compacting,
+  onCompact,
   suggestions,
   onSend,
-  onSkillChange,
-  onQuantityChange,
 }: ComposerProps) {
   const [text, setText] = React.useState("")
   const [attachments, setAttachments] = React.useState<
@@ -148,8 +136,11 @@ export function Composer({
     submit()
   }
 
-  const canSend =
-    text.trim().length > 0 && !busy && Boolean(consultationLabel)
+  const consultationSelected = useProviders(
+    (state) => state.selections.consultation !== null
+  )
+
+  const canSend = text.trim().length > 0 && !busy && consultationSelected
 
   return (
     <div className="w-full">
@@ -158,7 +149,7 @@ export function Composer({
         className="rounded-xl border border-border bg-card transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50"
       >
         <input {...getInputProps()} />
-        <div className="px-3.5 pt-3">
+        <div className="px-3 pt-2.5">
           <TextareaAutosize
             value={text}
             onChange={(event) => setText(event.target.value)}
@@ -173,11 +164,11 @@ export function Composer({
                 : "Reply, refine, or describe what to change..."
             }
             aria-label="Message"
-            className="w-full resize-none bg-transparent text-[15px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+            className="w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {attachments.length > 0 ? (
-          <div className="flex flex-wrap gap-2 px-3.5 pt-2">
+          <div className="flex flex-wrap gap-2 px-3 pt-2">
             {attachments.map((attachment) => (
               <div
                 key={attachment.id}
@@ -203,75 +194,42 @@ export function Composer({
             ))}
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-1.5 px-2.5 py-2.5">
-          <Tabs
-            value={skillId}
-            onValueChange={(value) => {
-              if (typeof value === "string" && isSkillId(value)) {
-                onSkillChange(value)
-              }
-            }}
+        <div className="flex items-center gap-1.5 px-2.5 py-2">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Attach reference images"
+            onClick={() => openFilePicker()}
+            disabled={attachments.length >= MAX_ATTACHMENTS}
           >
-            <TabsList aria-label="Asset type" className="rounded-lg">
-              {SKILL_IDS.map((id) => (
-                <TabsTrigger key={id} value={id} className="px-2.5">
-                  {getSkill(id).name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+            <PaperclipIcon />
+          </Button>
+          <ModelRolePopover />
           <div className="ml-auto flex items-center gap-1.5">
-            <Select
-              value={String(quantity)}
-              onValueChange={(value) => {
-                if (value === "1" || value === "2" || value === "4") {
-                  onQuantityChange(Number(value) as 1 | 2 | 4)
-                }
-              }}
-            >
-              <SelectTrigger size="sm" aria-label="Number of images">
-                <SelectValue>
-                  {(value) =>
-                    typeof value === "string" && value
-                      ? `${value} image${value === "1" ? "" : "s"}`
-                      : "Quantity"
-                  }
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {(["1", "2", "4"] as const).map((count) => (
-                  <SelectItem key={count} value={count}>
-                    {`${count} image${count === "1" ? "" : "s"}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Attach reference images"
-              onClick={() => openFilePicker()}
-              disabled={attachments.length >= MAX_ATTACHMENTS}
-            >
-              <PaperclipIcon />
-            </Button>
-            <ModelInfo
-              consultationLabel={consultationLabel}
-              generationLabel={generationLabel}
-            />
+            {variant === "conversation" ? (
+              <ContextWindowPie
+                contextTokens={contextTokens}
+                compacting={compacting}
+                onCompact={onCompact}
+              />
+            ) : null}
             <Button
               size="icon-sm"
               onClick={submit}
               disabled={!canSend}
               aria-label="Send message"
             >
-              {busy ? <Spinner className="size-4" /> : <ArrowUpIcon />}
+              {busy ? (
+                <ActivityOrb activity="consult" size={20} />
+              ) : (
+                <ArrowUpIcon />
+              )}
             </Button>
           </div>
         </div>
       </div>
-      {!consultationLabel ? (
-        <p className="mt-3 text-center text-xs text-muted-foreground">
+      {!consultationSelected ? (
+        <p className="mt-2.5 text-center text-xs text-muted-foreground">
           Add a provider and choose a consultation model in{" "}
           <Link
             href="/providers"
@@ -283,19 +241,16 @@ export function Composer({
         </p>
       ) : null}
       {variant === "welcome" && suggestions && suggestions.length > 0 ? (
-        <div className="mt-3 flex flex-wrap justify-center gap-1">
+        <div className="mt-2.5 flex flex-wrap justify-center gap-1">
           {suggestions.map((suggestion) => (
             <Button
-              key={suggestion.text}
+              key={suggestion}
               variant="ghost"
               size="sm"
               className="text-muted-foreground"
-              onClick={() => {
-                onSkillChange(suggestion.skillId)
-                setText(suggestion.text)
-              }}
+              onClick={() => setText(suggestion)}
             >
-              {suggestion.text}
+              {suggestion}
             </Button>
           ))}
         </div>
@@ -304,13 +259,136 @@ export function Composer({
   )
 }
 
-function ModelInfo({
-  consultationLabel,
-  generationLabel,
+function ContextWindowPie({
+  contextTokens,
+  compacting,
+  onCompact,
 }: {
-  consultationLabel: string | null
-  generationLabel: string | null
+  contextTokens?: number | null
+  compacting?: boolean
+  onCompact?: () => void
 }) {
+  const [open, setOpen] = React.useState(false)
+  const providers = useProviders((state) => state.providers)
+  const selection = useProviders((state) => state.selections.consultation)
+  const provider = selection
+    ? providers.find((p) => p.id === selection.providerId)
+    : undefined
+  const model = selection
+    ? (provider?.models ?? []).find((m) => m.id === selection.model)
+    : undefined
+  const limit = model?.contextWindow
+  const used = contextTokens ?? 0
+  const ratio = limit ? Math.min(used / limit, 1) : null
+  const nearLimit = ratio !== null && ratio >= 0.95
+
+  // Donut geometry: r=7, circumference ≈ 43.98.
+  const circumference = 2 * Math.PI * 7
+  const dash = ratio === null ? 0 : circumference * ratio
+  const strokeColor = nearLimit
+    ? "var(--warning)"
+    : ratio === null
+      ? "var(--muted-foreground)"
+      : "var(--foreground)"
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            aria-label="Context window usage"
+            className="flex size-7 items-center justify-center rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-ring transition-colors hover:bg-muted"
+          >
+            <svg viewBox="0 0 20 20" className="size-4" role="img">
+              <circle
+                cx="10"
+                cy="10"
+                r="7"
+                fill="none"
+                stroke="var(--border)"
+                strokeWidth="2.5"
+              />
+              {ratio !== null && ratio > 0 ? (
+                <circle
+                  cx="10"
+                  cy="10"
+                  r="7"
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth="2.5"
+                  strokeDasharray={`${dash} ${circumference}`}
+                  strokeLinecap="round"
+                  transform="rotate(-90 10 10)"
+                />
+              ) : null}
+              {compacting ? (
+                <circle
+                  cx="10"
+                  cy="10"
+                  r="7"
+                  fill="none"
+                  stroke="var(--warning)"
+                  strokeWidth="2.5"
+                  strokeDasharray="6 38"
+                  strokeLinecap="round"
+                  className="animate-spin origin-center"
+                />
+              ) : null}
+            </svg>
+          </button>
+        }
+      />
+      <PopoverContent align="end" className="w-72">
+        <PopoverHeader>
+          <PopoverTitle>Context window</PopoverTitle>
+          <PopoverDescription>
+            {model ? model.id : "No consultation model selected"}
+          </PopoverDescription>
+        </PopoverHeader>
+        <div className="text-xs text-muted-foreground">
+          {limit ? (
+            <p>
+              ~{used.toLocaleString()} of {limit.toLocaleString()} tokens used
+              {ratio !== null ? ` (${Math.round(ratio * 100).toString()}%)` : ""}.
+            </p>
+          ) : (
+            <p>
+              This endpoint does not report a context limit, so usage cannot be
+              measured.
+            </p>
+          )}
+          <p className="mt-1">
+            Measured after each consultation. The conversation auto-compacts at
+            95% to stay within the window.
+          </p>
+        </div>
+        {onCompact && limit ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              onCompact()
+              setOpen(false)
+            }}
+            disabled={compacting}
+          >
+            {compacting ? (
+              <>
+                <ActivityOrb activity="compact" size={20} />
+                Compacting…
+              </>
+            ) : (
+              "Compact now"
+            )}
+          </Button>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function ModelRolePopover() {
   const [open, setOpen] = React.useState(false)
 
   return (
@@ -320,28 +398,30 @@ function ModelInfo({
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Provider and model roles"
+            aria-label="Model settings"
           >
-            <CpuIcon />
+            <Settings2Icon />
           </Button>
         }
       />
-      <PopoverContent align="end" className="w-80">
+      <PopoverContent align="start" className="w-80">
         <PopoverHeader>
           <PopoverTitle>Model roles</PopoverTitle>
           <PopoverDescription>
             Consultation and generation can use different providers.
           </PopoverDescription>
         </PopoverHeader>
-        <div className="flex flex-col gap-1 text-xs">
-          <p className="truncate text-foreground">
-            <span className="text-muted-foreground">Consultation: </span>
-            {consultationLabel ?? "Not set"}
-          </p>
-          <p className="truncate text-foreground">
-            <span className="text-muted-foreground">Generation: </span>
-            {generationLabel ?? "Not set"}
-          </p>
+        <div className="flex flex-col gap-3">
+          <ModelRoleSelect
+            role="consultation"
+            capability="multimodal"
+            label="Consultation model"
+          />
+          <ModelRoleSelect
+            role="generation"
+            capability="image"
+            label="Generation model"
+          />
         </div>
         <Button
           variant="outline"

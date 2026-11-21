@@ -11,7 +11,7 @@ import {
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
+import { ActivityOrb, ThinkingOrbIndicator } from "@/components/thinking-indicator"
 import { useImageUrl } from "@/components/conversation/image-url"
 import { getSkill, type SkillId } from "@/lib/skills/registry"
 import type {
@@ -64,11 +64,16 @@ function GenerationGallery({
 
   return (
     <div className="flex flex-col gap-2">
+      {record.status === "running" ? (
+        <ThinkingOrbIndicator activity="generate" />
+      ) : null}
       <div
         className={
-          record.items.filter((item) => item.status !== "failed").length > 1
-            ? "grid grid-cols-2 gap-2"
-            : "grid grid-cols-1 gap-2"
+          record.items.filter((item) => item.status !== "failed").length > 2
+            ? "grid grid-cols-2 gap-2 sm:grid-cols-4"
+            : record.items.filter((item) => item.status !== "failed").length > 1
+              ? "grid grid-cols-2 gap-2"
+              : "grid grid-cols-1 gap-2"
         }
       >
         {record.items.map((item) => (
@@ -124,9 +129,9 @@ function GeneratedImageTile({
   if (item.status === "pending") {
     return (
       <div
-        className={`flex ${aspectClassName(aspect)} items-center justify-center rounded-xl border border-border bg-card text-muted-foreground`}
+        className={`flex ${aspectClassName(aspect)} items-center justify-center rounded-xl border border-border bg-card`}
       >
-        <Spinner className="size-5" />
+        <ActivityOrb activity="generate" size={32} />
       </div>
     )
   }
@@ -163,24 +168,24 @@ function GeneratedImageTile({
         unoptimized
         className={`w-full object-contain ${aspectClassName(aspect)}`}
       />
-      <div className="absolute right-2 bottom-2 flex gap-1.5">
+      <div className="absolute right-2 bottom-2 flex gap-1">
         {onUseAsReference ? (
           <button
             type="button"
             onClick={onUseAsReference}
             aria-label="Use as refinement reference"
-            className="flex size-8 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
+            className="flex size-7 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
           >
-            <ImagePlusIcon className="size-4" />
+            <ImagePlusIcon className="size-3.5" />
           </button>
         ) : null}
         <a
           href={url}
           download={`aestry-${item.id}.${EXTENSIONS[item.mimeType ?? ""] ?? "png"}`}
           aria-label="Download image"
-          className="flex size-8 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
+          className="flex size-7 items-center justify-center rounded-lg bg-background/90 text-foreground ring-1 ring-border transition-colors hover:bg-foreground hover:text-background"
         >
-          <DownloadIcon className="size-4" />
+          <DownloadIcon className="size-3.5" />
         </a>
       </div>
     </div>
@@ -212,17 +217,17 @@ export function MessageListItem({
 
   if (message.role === "user") {
     return (
-      <div className="flex flex-col items-end gap-2">
+      <div className="flex flex-col gap-2">
         {content.type === "text" ? (
           <>
             {content.references && content.references.length > 0 ? (
-              <div className="flex flex-wrap justify-end gap-2">
+              <div className="flex flex-wrap gap-2">
                 {content.references.map((reference) => (
                   <ReferenceThumb key={reference.imageId} imageId={reference.imageId} />
                 ))}
               </div>
             ) : null}
-            <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2.5 text-sm text-primary-foreground sm:max-w-[70%]">
+            <div className="w-full rounded-lg bg-muted px-3 py-2.5 text-sm text-foreground">
               <p className="whitespace-pre-wrap break-words">{content.text}</p>
             </div>
           </>
@@ -267,7 +272,7 @@ export function MessageListItem({
   if (content.type === "brief") {
     const brief = content.brief
     return (
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3.5">
+      <div className="flex flex-col gap-2.5 rounded-xl border border-border bg-card p-3">
         <div className="flex items-center justify-between gap-2">
           <p className="text-sm font-medium text-foreground">
             Design brief · {getSkill(skillId).name}
@@ -365,6 +370,7 @@ export function MessageList({
   generations,
   skillId,
   generatableBriefId,
+  streamingText,
   onGenerate,
   onRetryItem,
   onClarificationSuggestion,
@@ -374,22 +380,17 @@ export function MessageList({
   generations: Record<string, GenerationRecord>
   skillId: SkillId
   generatableBriefId?: string
+  /** Live assistant text while the consultation streams in. */
+  streamingText?: string | null
   onGenerate?: (count: 1 | 2 | 4) => void
   onRetryItem?: (generationId: string, itemId: string) => void
   onClarificationSuggestion?: (suggestion: string) => void
   onUseAsReference?: (imageId: string, mimeType: string) => void
 }) {
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-4">
       {messages.map((message) => (
-        <div
-          key={message.id}
-          className={
-            message.role === "user"
-              ? "flex justify-end"
-              : "flex justify-start"
-          }
-        >
+        <div key={message.id}>
           <div className="max-w-full">
             <MessageListItem
               message={message}
@@ -404,6 +405,16 @@ export function MessageList({
           </div>
         </div>
       ))}
+      {streamingText ? (
+        <div className="flex justify-start">
+          <div className="max-w-full">
+            <p className="text-sm/relaxed text-foreground whitespace-pre-wrap break-words">
+              {streamingText}
+              <span className="animate-pulse">▍</span>
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

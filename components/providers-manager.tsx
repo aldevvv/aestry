@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Spinner } from "@/components/ui/spinner"
+import { ActivityOrb } from "@/components/thinking-indicator"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useMounted } from "@/hooks/use-mounted"
 import {
@@ -46,13 +46,13 @@ import {
   maskApiKey,
   openAiCompatibleFormSchema,
   useProviders,
-  resolveSelection,
   type ModelCapability,
   type ProviderConfig,
   type ProviderKind,
   type ProviderModel,
   type ProviderRole,
 } from "@/lib/provider-store"
+import { ModelRoleSelect } from "@/components/model-role-select"
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
@@ -123,6 +123,10 @@ async function requestModels(payload: {
           id: item.id,
           capability: item.capability,
           label: typeof item.label === "string" ? item.label : undefined,
+          contextWindow:
+            typeof item.contextWindow === "number"
+              ? item.contextWindow
+              : undefined,
         })
       }
     }
@@ -554,7 +558,7 @@ function AddProviderForm() {
               >
                 {googleModelState.loading ? (
                   <>
-                    <Spinner className="size-3.5" />
+                    <ActivityOrb activity="models" size={20} />
                     Loading…
                   </>
                 ) : (
@@ -692,7 +696,7 @@ function AddProviderForm() {
             >
               {customModelState.loading ? (
                 <>
-                  <Spinner className="size-3.5" />
+                  <ActivityOrb activity="models" size={20} />
                   Loading…
                 </>
               ) : (
@@ -781,64 +785,10 @@ function ActiveModelRole({
   label: string
   hint: string
 }) {
-  const providers = useProviders((state) => state.providers)
-  const selection = useProviders((state) => state.selections[role])
-  const setSelection = useProviders((state) => state.setSelection)
-
-  const options = providers.flatMap((provider) =>
-    (provider.models ?? [])
-      .filter((model: ProviderModel) => model.capability === capability)
-      .map((model) => ({
-        value: `${provider.id}::${model.id}`,
-        label: `${provider.label} · ${model.id}`,
-      }))
-  )
-
-  const resolved = resolveSelection(providers, selection)
-  const currentValue = resolved
-    ? `${resolved.provider.id}::${resolved.model}`
-    : null
-  // The selection may point at a provider or model that no longer exists.
-  const stale = Boolean(selection) && !resolved
-
   return (
     <div className="flex flex-col gap-1.5">
-      <Label htmlFor={`active-${role}`}>{label}</Label>
-      {options.length > 0 ? (
-        <Select
-          value={currentValue}
-          onValueChange={(value) => {
-            if (typeof value !== "string") return
-            const separator = value.indexOf("::")
-            const providerId = value.slice(0, separator)
-            const model = value.slice(separator + 2)
-            setSelection(role, { providerId, model })
-          }}
-        >
-          <SelectTrigger size="sm" className="w-full" id={`active-${role}`}>
-            <SelectValue placeholder={`Choose a ${capability} model`} />
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          Load models for a provider below to choose one here.
-        </p>
-      )}
-      {stale ? (
-        <p className="text-xs text-warning">
-          The previously selected model is no longer available — choose again.
-        </p>
-      ) : null}
-      {resolved ? (
-        <p className="text-xs text-muted-foreground">{hint}</p>
-      ) : null}
+      <ModelRoleSelect role={role} capability={capability} label={label} />
+      <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   )
 }

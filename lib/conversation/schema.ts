@@ -10,6 +10,8 @@ import { designBriefSchema } from "@/lib/skills/registry"
 export const consultationOutcomeSchema = z.object({
   message: z.string().min(1),
   phase: z.enum(["clarifying", "ready"]),
+  /** The asset skill the consultant assigned to this conversation. */
+  skill: z.enum(["app-icon", "logo", "og-image"]).nullish(),
   brief: designBriefSchema.nullish(),
   clarification: z
     .object({
@@ -22,6 +24,7 @@ export const consultationOutcomeSchema = z.object({
 export type ConsultationOutcome = {
   message: string
   phase: "clarifying" | "ready"
+  skill?: "app-icon" | "logo" | "og-image"
   brief?: z.infer<typeof designBriefSchema>
   clarification?: { question: string; suggestions?: string[] }
   /**
@@ -46,7 +49,7 @@ export const chatRequestSchema = z.object({
         text: z.string().max(8_000),
       })
     )
-    .max(30),
+    .max(80),
   referenceImages: z
     .array(
       z.object({
@@ -57,11 +60,19 @@ export const chatRequestSchema = z.object({
     .max(4)
     .optional(),
   projectContext: z.string().max(8_000).optional(),
+  /** "compact" runs the auto-compaction pass instead of consultation. */
+  mode: z.enum(["consult", "compact"]).default("consult"),
+  /** Consultation streams over SSE by default. */
+  stream: z.boolean().default(true),
 })
 
 export type ChatRequestBody = z.infer<typeof chatRequestSchema>
 
 export type ChatApiResponse = {
-  outcome: ConsultationOutcome
+  outcome?: ConsultationOutcome
+  /** Compaction result when mode is "compact". */
+  compaction?: { summary: string; decisions?: string[] }
+  /** Prompt tokens reported by the provider for this request. */
+  usage?: { promptTokens?: number }
   warning?: string
 }
