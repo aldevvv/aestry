@@ -353,7 +353,7 @@ function RecentRowMenu({
           className="min-w-36"
         >
           <DropdownMenuItem
-            onSelect={() => {
+            onClick={() => {
               onRename()
               if (isMobile) {
                 setOpenMobile(false)
@@ -373,7 +373,7 @@ function RecentRowMenu({
                 {projects.map((project) => (
                   <DropdownMenuItem
                     key={project.id}
-                    onSelect={() => {
+                    onClick={() => {
                       onMoveToProject(project.id)
                       if (isMobile) {
                         setOpenMobile(false)
@@ -388,7 +388,7 @@ function RecentRowMenu({
           ) : null}
           <DropdownMenuItem
             variant="destructive"
-            onSelect={() => {
+            onClick={() => {
               // Controlled confirmation outside the menu: a nested trigger
               // unmounts with the menu and flashes the dialog.
               setConfirmOpen(true)
@@ -696,4 +696,4 @@ function AppSidebar() {
   )
 }
 
-export { AppSidebar }
+export { AppSidebar, RenameConversationDialog, RecentRowMenu }
